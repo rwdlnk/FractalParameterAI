@@ -1,0 +1,156 @@
+{
+  "metadata": {
+    "analysis_type": "temporal_evolution",
+    "vtk_directory": "/media/rod/ResearchII_III/ResearchIII/githubRepos/FastFractalAnalyzer/data/Dalziel_1999/slimMaster",
+    "time_range": [
+      1.999,
+      12.0
+    ],
+    "time_step": 1.0,
+    "total_analysis_time": 2251.165675163269,
+    "timestamp": 1760146618.0780737
+  },
+  "summary": {
+    "time_range": [
+      1.999,
+      8.999
+    ],
+    "dimension_range": [
+      1.0230351416641832,
+      1.5422565710681935
+    ],
+    "total_timepoints": 6,
+    "successful_analyses": 6,
+    "complexity_evolution": {
+      "initial_segments": 475,
+      "final_segments": 5435,
+      "growth_factor": 11.442105263157895
+    }
+  },
+  "parameter_evolution": {
+    "times": [
+      1.999,
+      4.9990000000000006,
+      5.9990000000000006,
+      6.9990000000000006,
+      7.9990000000000006,
+      8.999
+    ],
+    "dimensions": [
+      1.0230351416641832,
+      1.5359786497949144,
+      1.5422565710681935,
+      1.5093885437741585,
+      1.52409022929714,
+      1.5277522199518847
+    ],
+    "initial_deltas": [
+      0.0019875000000000006,
+      0.0018881250000000005,
+      0.0015105000000000006,
+      0.0013594500000000005,
+      0.0012235050000000006,
+      0.0011011545000000006
+    ],
+    "delta_factors": [
+      1.4,
+      1.4,
+      1.5,
+      1.5,
+      1.5,
+      1.5
+    ],
+    "num_steps": [
+      15,
+      15,
+      17,
+      18,
+      19,
+      20
+    ],
+    "r_squared": [
+      0.998092507571263,
+      0.9938102741094401,
+      0.9926403678613515,
+      0.9962192959662998,
+      0.9954367922372079,
+      0.9943022051971183
+    ],
+    "segments": [
+      475,
+      2624,
+      3412,
+      4116,
+      4755,
+      5435
+    ]
+  },
+  "detailed_results": [
+    {
+      "time": 1.999,
+      "parameters": {
+        "initial_delta": 0.0019875000000000006,
+        "delta_factor": 1.4,
+        "num_steps": 15
+      },
+      "n_segments": 475,
+      "dimension": 1.0230351416641832,
+      "r_squared": 0.998092507571263
+    },
+    {
+      "time": 4.9990000000000006,
+      "parameters": {
+        "initial_delta": 0.0018881250000000005,
+        "delta_factor": 1.4,
+        "num_steps": 15
+      },
+      "n_segments": 2624,
+      "dimension": 1.5359786497949144,
+      "r_squared": 0.9938102741094401
+    },
+    {
+      "time": 5.9990000000000006,
+      "parameters": {
+        "initial_delta": 0.0015105000000000006,
+        "delta_factor": 1.5,
+        "num_steps": 17
+      },
+      "n_segments": 3412,
+      "dimension": 1.5422565710681935,
+      "r_squared": 0.9926403678613515
+    },
+    {
+      "time": 6.9990000000000006,
+      "parameters": {
+        "initial_delta": 0.0013594500000000005,
+        "delta_factor": 1.5,
+        "num_steps": 18
+      },
+      "n_segments": 4116,
+      "dimension": 1.5093885437741585,
+      "r_squared": 0.9962192959662998
+    },
+    {
+      "time": 7.9990000000000006,
+      "parameters": {
+        "initial_delta": 0.0012235050000000006,
+        "delta_factor": 1.5,
+        "num_steps": 19
+      },
+      "n_segments": 4755,
+      "dimension": 1.52409022929714,
+      "r_squared": 0.9954367922372079
+    },
+    {
+      "time": 8.999,
+      "parameters": {
+        "initial_delta": 0.0011011545000000006,
+        "delta_factor": 1.5,
+        "num_steps": 20
+      },
+      "n_segments": 5435,
+      "dimension": 1.5277522199518847,
+      "r_squared": 0.9943022051971183
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "metadata": {
+    "analysis_type": "temporal_evolution",
+    "vtk_directory": "/media/rod/ResearchII_III/ResearchIII/githubRepos/FastFractalAnalyzer/data/Dalziel_1999/slimMaster",
+    "time_range": [
+      1.999,
+      3.0
+    ],
+    "time_step": 0.2,
+    "total_analysis_time": 180.43684601783752,
+    "timestamp": 1760144700.4678903
+  },
+  "summary": {
+    "time_range": [
+      1.999,
+      2.3990000000000005
+    ],
+    "dimension_range": [
+      1.0230351416641832,
+      1.2604374134193308
+    ],
+    "total_timepoints": 3,
+    "successful_analyses": 3,
+    "complexity_evolution": {
+      "initial_segments": 475,
+      "final_segments": 554,
+      "growth_factor": 1.1663157894736842
+    }
+  },
+  "parameter_evolution": {
+    "times": [
+      1.999,
+      2.1990000000000003,
+      2.3990000000000005
+    ],
+    "dimensions": [
+      1.0230351416641832,
+      1.1947806540775645,
+      1.2604374134193308
+    ],
+    "initial_deltas": [
+      0.0019875000000000006,
+      0.0018881250000000005,
+      0.0018881250000000005
+    ],
+    "delta_factors": [
+      1.4,
+      1.4,
+      1.4
+    ],
+    "num_steps": [
+      15,
+      15,
+      15
+    ],
+    "r_squared": [
+      0.998092507571263,
+      0.9874435524205261,
+      0.9936823723932938
+    ],
+    "segments": [
+      475,
+      502,
+      554
+    ]
+  },
+  "detailed_results": [
+    {
+      "time": 1.999,
+      "parameters": {
+        "initial_delta": 0.0019875000000000006,
+        "delta_factor": 1.4,
+        "num_steps": 15
+      },
+      "n_segments": 475,
+      "dimension": 1.0230351416641832,
+      "r_squared": 0.998092507571263
+    },
+    {
+      "time": 2.1990000000000003,
+      "parameters": {
+        "initial_delta": 0.0018881250000000005,
+        "delta_factor": 1.4,
+        "num_steps": 15
+      },
+      "n_segments": 502,
+      "dimension": 1.1947806540775645,
+      "r_squared": 0.9874435524205261
+    },
+    {
+      "time": 2.3990000000000005,
+      "parameters": {
+        "initial_delta": 0.0018881250000000005,
+        "delta_factor": 1.4,
+        "num_steps": 15
+      },
+      "n_segments": 554,
+      "dimension": 1.2604374134193308,
+      "r_squared": 0.9936823723932938
+    }
+  ]
+}
