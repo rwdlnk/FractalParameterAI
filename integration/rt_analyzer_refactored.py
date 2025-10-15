@@ -457,7 +457,7 @@ Examples:
                        help='Output directory')
     parser.add_argument('--performance', choices=['fast', 'balanced', 'accurate'],
                        default='fast', help='Performance mode')
-    parser.add_argument('--interface-method', choices=['skimage'],
+    parser.add_argument('--interface-method', choices=['skimage', 'plic', 'conrec'],
                        default='skimage', help='Interface extraction method')
     parser.add_argument('--no-learning', action='store_true',
                        help='Disable AI learning')

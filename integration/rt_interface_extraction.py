@@ -20,6 +20,21 @@ except ImportError:
     SKIMAGE_AVAILABLE = False
     print("⚠️  scikit-image not available - interface extraction limited")
 
+# Import CONREC and PLIC extractors from integration directory
+try:
+    from integration.conrec_extractor import CONRECExtractor
+    CONREC_AVAILABLE = True
+except ImportError:
+    CONREC_AVAILABLE = False
+    print("⚠️  CONREC extractor not available")
+
+try:
+    from integration.plic_extractor import PLICExtractor
+    PLIC_AVAILABLE = True
+except ImportError:
+    PLIC_AVAILABLE = False
+    print("⚠️  PLIC extractor not available")
+
 
 @dataclass
 class InterfaceData:
@@ -52,8 +67,22 @@ class InterfaceExtractor:
         self.method = method
         self.debug = debug
 
+        # Check method availability
         if method == "skimage" and not SKIMAGE_AVAILABLE:
             raise RuntimeError("scikit-image not available but required for skimage method")
+        elif method == "plic" and not PLIC_AVAILABLE:
+            raise RuntimeError("PLIC extractor not available but required for plic method")
+        elif method == "conrec" and not CONREC_AVAILABLE:
+            raise RuntimeError("CONREC extractor not available but required for conrec method")
+
+        # Initialize method-specific extractors
+        self.plic_extractor = None
+        self.conrec_extractor = None
+
+        if method == "plic" and PLIC_AVAILABLE:
+            self.plic_extractor = PLICExtractor(debug=debug)
+        elif method == "conrec" and CONREC_AVAILABLE:
+            self.conrec_extractor = CONRECExtractor(debug=debug)
 
     def extract_interface(self, f_grid: np.ndarray, x_grid: np.ndarray,
                          y_grid: np.ndarray, level: float = 0.5) -> Optional[InterfaceData]:
@@ -74,9 +103,9 @@ class InterfaceExtractor:
         if self.method == "skimage":
             result = self._extract_skimage(f_grid, x_grid, y_grid, level)
         elif self.method == "plic":
-            raise NotImplementedError("PLIC method not yet implemented")
+            result = self._extract_plic(f_grid, x_grid, y_grid, level)
         elif self.method == "conrec":
-            raise NotImplementedError("CONREC method not yet implemented")
+            result = self._extract_conrec(f_grid, x_grid, y_grid, level)
         else:
             raise ValueError(f"Unknown extraction method: {self.method}")
 
@@ -159,6 +188,124 @@ class InterfaceExtractor:
         except Exception as e:
             if self.debug:
                 print(f"   ❌ scikit-image extraction failed: {e}")
+            return None
+
+    def _extract_plic(self, f_grid: np.ndarray, x_grid: np.ndarray,
+                     y_grid: np.ndarray, level: float) -> Optional[InterfaceData]:
+        """
+        Extract interface using PLIC (Piecewise Linear Interface Calculation).
+
+        Args:
+            f_grid: Volume fraction field
+            x_grid: X-coordinate grid
+            y_grid: Y-coordinate grid
+            level: Contour level (ignored for PLIC, uses VOF directly)
+
+        Returns:
+            InterfaceData or None
+        """
+        if not PLIC_AVAILABLE or self.plic_extractor is None:
+            return None
+
+        try:
+            # PLIC doesn't use a contour level - it reconstructs based on VOF directly
+            segment_list = self.plic_extractor.extract_interface_plic(f_grid, x_grid, y_grid)
+
+            if not segment_list:
+                if self.debug:
+                    print(f"   ⚠️  No segments extracted by PLIC")
+                return None
+
+            # Convert segment list format to our format
+            # PLIC returns: [((x1, y1), (x2, y2)), ...]
+            # We need: array of [x1, y1, x2, y2]
+            segments = np.array([[x1, y1, x2, y2] for (x1, y1), (x2, y2) in segment_list])
+
+            # Convert segments to points (for metadata)
+            interface_points = []
+            for (x1, y1), (x2, y2) in segment_list:
+                interface_points.append((x1, y1))
+            if segment_list:
+                interface_points.append(segment_list[-1][1])  # Add last endpoint
+
+            # Create metadata
+            metadata = {
+                'n_points': len(interface_points),
+                'n_segments': len(segments),
+                'level': 'VOF-based',
+                'bounds': self._compute_bounds(interface_points)
+            }
+
+            return InterfaceData(
+                points=interface_points,
+                segments=segments,
+                extraction_method="plic",
+                extraction_time=0.0,  # Will be set by caller
+                metadata=metadata
+            )
+
+        except Exception as e:
+            if self.debug:
+                print(f"   ❌ PLIC extraction failed: {e}")
+            return None
+
+    def _extract_conrec(self, f_grid: np.ndarray, x_grid: np.ndarray,
+                       y_grid: np.ndarray, level: float) -> Optional[InterfaceData]:
+        """
+        Extract interface using CONREC contouring algorithm.
+
+        Args:
+            f_grid: Volume fraction field
+            x_grid: X-coordinate grid
+            y_grid: Y-coordinate grid
+            level: Contour level
+
+        Returns:
+            InterfaceData or None
+        """
+        if not CONREC_AVAILABLE or self.conrec_extractor is None:
+            return None
+
+        try:
+            # CONREC returns segment list format
+            segment_list = self.conrec_extractor.extract_interface_conrec(
+                f_grid, x_grid, y_grid, level
+            )
+
+            if not segment_list:
+                if self.debug:
+                    print(f"   ⚠️  No segments extracted by CONREC")
+                return None
+
+            # Convert segment list format to our format
+            segments = np.array([[x1, y1, x2, y2] for (x1, y1), (x2, y2) in segment_list])
+
+            # Convert segments to points (for metadata)
+            interface_points = []
+            for (x1, y1), (x2, y2) in segment_list:
+                interface_points.append((x1, y1))
+            if segment_list:
+                interface_points.append(segment_list[-1][1])  # Add last endpoint
+
+            # Create metadata
+            metadata = {
+                'n_points': len(interface_points),
+                'n_segments': len(segments),
+                'level': level,
+                'bounds': self._compute_bounds(interface_points)
+            }
+
+            return InterfaceData(
+                points=interface_points,
+                segments=segments,
+                extraction_method="conrec",
+                extraction_time=0.0,  # Will be set by caller
+                metadata=metadata
+            )
+
+        except Exception as e:
+            if self.debug:
+                print(f"   ❌ CONREC extraction failed: {e}")
             return None
 
     def _points_to_segments(self, points: List[Tuple[float, float]]) -> np.ndarray:
