@@ -141,6 +141,29 @@ def compute_straightness_metrics(segments):
     }
 
 
+def compute_connectivity(segments):
+    """
+    Compute connectivity ratio - what fraction of segments are connected end-to-end.
+    Returns value between 0 (completely disconnected) and 1 (fully connected curve).
+    """
+    n = len(segments)
+    if n <= 1:
+        return 1.0  # Single segment is "connected" by definition
+
+    connected_count = 0
+    for i in range(n - 1):
+        end_point = segments[i, 2:4]
+        next_start = segments[i+1, 0:2]
+        distance = np.sqrt(np.sum((end_point - next_start)**2))
+
+        # Consider connected if distance is very small (tolerance for floating point)
+        if distance < 0.001:
+            connected_count += 1
+
+    connectivity_ratio = connected_count / (n - 1)
+    return connectivity_ratio
+
+
 def extract_interface_features(segments):
     """
     Extract comprehensive features from interface segments.
@@ -152,6 +175,7 @@ def extract_interface_features(segments):
     roughness = estimate_interface_roughness(segments)
     fractal_props = estimate_fractal_dimension_heuristic(segments)
     straightness = compute_straightness_metrics(segments)
+    connectivity = compute_connectivity(segments)
 
     # Spatial scale features
     characteristic_length = np.sqrt(bbox['width'] * bbox['height'])
@@ -192,15 +216,25 @@ def extract_interface_features(segments):
         # Derived features for parameter prediction
         'complexity_score': roughness['direction_change_rate'] * roughness['angle_std'],
         'scale_ratio': max_feature_size / (min_feature_size + 1e-10),
-        'density': n_segments / (bbox['width'] * bbox['height'] + 1e-10)
+        'density': n_segments / (bbox['width'] * bbox['height'] + 1e-10),
+
+        # Connectivity
+        'connectivity_ratio': connectivity
     }
 
 
 def classify_interface_type(features):
     """
     Classify interface type based on features.
-    Enhanced to detect high-turning fractals like Dragon curves.
+    Enhanced to detect:
+    - High-turning fractals like Dragon curves
+    - Disconnected fracture networks
     """
+
+    # NEW: Detect fracture networks first (disconnected segments)
+    # Key insight: fracture networks have very low connectivity
+    if features['connectivity_ratio'] < 0.1 and features['n_segments'] > 20:
+        return 'fracture_network'  # Disconnected segments (geologic fractures, etc)
 
     # Special case: perfectly straight line (horizontal or vertical)
     if (features['segment_length_cv'] < 0.001 and
@@ -281,7 +315,21 @@ def suggest_optimal_parameters(features, enable_rotation=None):
 
     rotation_angles, rotation_enabled = get_rotation_parameters(interface_type, enable_rotation)
 
-    if interface_type == 'straight_line':
+    if interface_type == 'fracture_network':
+        # Disconnected fracture networks: need fine resolution relative to segment size
+        # Use mean segment length as reference, not domain size
+        # Note: Use conservative parameters to avoid excessive computation with many segments
+        return {
+            'initial_delta': features['mean_segment_length'] * 3.0,  # Start at ~3x segment size
+            'delta_factor': 2.0,  # Larger scaling to avoid tiny boxes
+            'num_steps': 10,      # Limited steps for computational efficiency
+            'confidence': 'medium',
+            'reason': 'fracture network - balanced resolution for disconnected segments',
+            'rotation_angles': rotation_angles,
+            'rotation_enabled': rotation_enabled
+        }
+
+    elif interface_type == 'straight_line':
         # Your empirical findings for straight lines
         return {
             'initial_delta': features['mean_segment_length'] * 8,  # 8x feature size

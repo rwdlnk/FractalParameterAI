@@ -170,13 +170,19 @@ class ParameterLearner:
 
     def get_refined_parameters(self, interface_type: str, features: Dict,
                              implementation: str = "basic_box_counting") -> Dict:
-        """Get refined parameters based on learning from feedback."""
+        """Get refined parameters based on learning from feedback with scale normalization."""
         records = self.collector.load_feedback_history()
 
         # Filter by interface type and implementation
         relevant_records = [
             r for r in records
             if r.interface_type == interface_type and r.implementation == implementation
+        ]
+
+        # Also filter out physically invalid results (D < 1.0 or D > 2.0 for 2D embeddings)
+        relevant_records = [
+            r for r in relevant_records
+            if r.dimension_result is None or (1.0 <= r.dimension_result <= 2.0)
         ]
 
         if not relevant_records:
@@ -190,41 +196,93 @@ class ParameterLearner:
             # No successes yet - use conservative parameters
             return self._get_conservative_parameters(interface_type, features, implementation)
 
-        # Extract parameter statistics from successful cases
-        successful_params = [r.suggested_parameters for r in successful]
+        # Get current domain characteristics for scale normalization
+        current_char_length = features.get('characteristic_length', 1.0)
+        current_domain_size = min(features.get('bbox_width', 1.0), features.get('bbox_height', 1.0))
+
+        # Extract parameter statistics from successful cases with scale normalization
+        normalized_initial_deltas = []
+        delta_factors = []
+        num_steps_values = []
+
+        for record in successful:
+            params = record.suggested_parameters
+            record_features = record.features
+
+            # Normalize initial_delta by the characteristic_length at time of recording
+            record_char_length = record_features.get('characteristic_length', 1.0)
+            if record_char_length > 0:
+                # Store as ratio: initial_delta / characteristic_length
+                normalized_ratio = params.get('initial_delta', 0) / record_char_length
+                normalized_initial_deltas.append(normalized_ratio)
+
+            if params.get('delta_factor') is not None:
+                delta_factors.append(params.get('delta_factor'))
+            if params.get('num_steps') is not None:
+                num_steps_values.append(params.get('num_steps'))
 
         refined_params = {}
-        for param in ['initial_delta', 'delta_factor', 'num_steps']:
-            values = [p.get(param) for p in successful_params if p.get(param) is not None]
-            if values:
-                # Use mean of successful values
-                refined_params[param] = np.mean(values)
+
+        # Calculate initial_delta from normalized ratios
+        if normalized_initial_deltas:
+            mean_ratio = np.mean(normalized_initial_deltas)
+            # Apply to current characteristic length
+            suggested_initial_delta = mean_ratio * current_char_length
+
+            # Apply safety bounds: must be less than domain size
+            max_allowed_delta = current_domain_size * 0.8  # 80% of domain
+            refined_params['initial_delta'] = min(suggested_initial_delta, max_allowed_delta)
+
+        # Other parameters don't need scale normalization
+        if delta_factors:
+            refined_params['delta_factor'] = np.mean(delta_factors)
+        if num_steps_values:
+            refined_params['num_steps'] = np.mean(num_steps_values)
 
         return refined_params
 
     def _get_fallback_parameters(self, interface_type: str, features: Dict,
                                implementation: str) -> Dict:
-        """Data-driven fallback parameters based on user's empirical discoveries."""
+        """Data-driven fallback parameters based on user's empirical discoveries, with scale awareness."""
+
+        # Get domain characteristics
+        char_length = features.get('characteristic_length', 1.0)
+        domain_size = min(features.get('bbox_width', 1.0), features.get('bbox_height', 1.0))
+        max_allowed_delta = domain_size * 0.8  # Safety bound
 
         # Use your successful manual parameters as intelligent defaults
-        if interface_type == 'straight_line':
-            # Your empirical success: {0.5, 1.8, 15} → 0.1% error
+        # These are expressed as ratios of characteristic_length
+        if interface_type == 'fracture_network':
+            # Fracture networks: use segment size, not domain size
+            mean_segment = features.get('mean_segment_length', char_length * 0.1)
+            initial_delta = min(mean_segment * 3.0, max_allowed_delta)
             return {
-                'initial_delta': 0.5,
+                'initial_delta': initial_delta,
+                'delta_factor': 2.0,
+                'num_steps': 10
+            }
+        elif interface_type == 'straight_line':
+            # Your empirical success: used ratio ~0.5 of char_length
+            initial_delta = min(0.5 * char_length, max_allowed_delta)
+            return {
+                'initial_delta': initial_delta,
                 'delta_factor': 1.8,
                 'num_steps': 15
             }
         elif interface_type in ['complex_fractal', 'moderate_fractal', 'koch_curve']:
-            # Your Sierpinski success: {1.0, 1.2, 15} → 2.2% error
+            # Use conservative ratio to work across different domain sizes
+            # Start with boxes that are 1/3 of domain to ensure good scaling range
+            initial_delta = min(0.3 * char_length, max_allowed_delta)
             return {
-                'initial_delta': 1.0,
-                'delta_factor': 1.2,
+                'initial_delta': initial_delta,
+                'delta_factor': 1.5,
                 'num_steps': 15
             }
         else:
             # Conservative middle ground for unknown cases
+            initial_delta = min(0.8 * char_length, max_allowed_delta)
             return {
-                'initial_delta': 0.8,
+                'initial_delta': initial_delta,
                 'delta_factor': 1.5,
                 'num_steps': 12
             }
