@@ -143,24 +143,65 @@ def compute_straightness_metrics(segments):
 
 def compute_connectivity(segments):
     """
-    Compute connectivity ratio - what fraction of segments are connected end-to-end.
-    Returns value between 0 (completely disconnected) and 1 (fully connected curve).
+    Compute connectivity ratio based on the number of connected components.
+
+    Returns:
+        - 1.0 if all segments form a single connected curve
+        - Lower values if there are multiple disconnected components
+
+    For multiple disconnected bubbles, this will correctly return < 1.0
     """
     n = len(segments)
     if n <= 1:
         return 1.0  # Single segment is "connected" by definition
 
-    connected_count = 0
-    for i in range(n - 1):
-        end_point = segments[i, 2:4]
-        next_start = segments[i+1, 0:2]
-        distance = np.sqrt(np.sum((end_point - next_start)**2))
+    # Build adjacency: which segments connect to which
+    # Two segments are adjacent if one's endpoint matches the other's start point
+    tolerance = 0.001
 
-        # Consider connected if distance is very small (tolerance for floating point)
-        if distance < 0.001:
-            connected_count += 1
+    # Create lookup for segment indices by their start points
+    start_points = {}
+    for i in range(n):
+        start_key = (round(segments[i, 0] / tolerance), round(segments[i, 1] / tolerance))
+        if start_key not in start_points:
+            start_points[start_key] = []
+        start_points[start_key].append(i)
 
-    connectivity_ratio = connected_count / (n - 1)
+    # Build adjacency list
+    adjacency = [[] for _ in range(n)]
+    for i in range(n):
+        end_key = (round(segments[i, 2] / tolerance), round(segments[i, 3] / tolerance))
+        # Find segments that start where this one ends
+        if end_key in start_points:
+            for j in start_points[end_key]:
+                if j != i:
+                    adjacency[i].append(j)
+                    adjacency[j].append(i)  # Undirected graph
+
+    # Count connected components using BFS/DFS
+    visited = [False] * n
+    n_components = 0
+
+    for i in range(n):
+        if not visited[i]:
+            # Start new component
+            n_components += 1
+            # BFS to mark all connected segments
+            queue = [i]
+            visited[i] = True
+
+            while queue:
+                current = queue.pop(0)
+                for neighbor in adjacency[current]:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        queue.append(neighbor)
+
+    # Connectivity: 1.0 if single component, decreases with more components
+    # Formula: 1 - (n_components - 1) / n_segments
+    # This gives 1.0 for 1 component, and approaches 0 for many components
+    connectivity_ratio = 1.0 - (n_components - 1) / n
+
     return connectivity_ratio
 
 
@@ -229,6 +270,7 @@ def classify_interface_type(features):
     Enhanced to detect:
     - High-turning fractals like Dragon curves
     - Disconnected fracture networks
+    - Near-linear curves (D ~ 1.0-1.1, early-time RT interfaces)
     """
 
     # NEW: Detect fracture networks first (disconnected segments)
@@ -245,6 +287,17 @@ def classify_interface_type(features):
     # High linearity and low variation = straight line
     if features['linearity_r_squared'] > 0.99 and features['direction_change_rate'] < 0.1:
         return 'straight_line'
+
+    # NEW: Near-linear curves (D ~ 1.0-1.1)
+    # Early-time RT interfaces: slightly wavy but close to straight
+    # Key characteristics: very low tortuosity, low complexity, low direction changes
+    # Note: linearity_r_squared can be unreliable for nearly-horizontal interfaces,
+    # so we primarily use tortuosity and complexity
+    elif (features['tortuosity'] < 1.15 and
+          features['complexity_score'] < 0.8 and
+          features['direction_change_rate'] < 0.5 and
+          features['dimension_estimate'] < 1.15):
+        return 'near_linear'  # Smooth, slightly wavy curves (D ~ 1.0-1.1)
 
     # ENHANCED: Dragon curve detection - extreme turning fractals
     # Key finding: Dragon curves have >90% directional change rate
@@ -306,8 +359,8 @@ def suggest_optimal_parameters(features, enable_rotation=None):
             elif interface_type in ['koch_curve', 'complex_fractal']:
                 # Moderate benefit - test key angles
                 return [0, 15, 30, 45, 60, 75, 90], True
-            elif interface_type == 'straight_line':
-                # Straight lines typically don't benefit from rotation
+            elif interface_type in ['straight_line', 'near_linear']:
+                # Straight and near-linear curves don't benefit from rotation
                 return [0], False
             else:
                 # Default: test basic angles
@@ -339,6 +392,20 @@ def suggest_optimal_parameters(features, enable_rotation=None):
             'reason': 'straight line - use fine resolution',
             'rotation_angles': rotation_angles,
             'rotation_enabled': rotation_enabled
+        }
+
+    elif interface_type == 'near_linear':
+        # NEW: Near-linear curves (D ~ 1.0-1.1)
+        # Early-time RT interfaces, slightly wavy smooth curves
+        # Use fewer steps than fractals since there's limited scaling range
+        return {
+            'initial_delta': features['characteristic_length'] * 0.3,  # Start larger
+            'delta_factor': 1.8,  # Standard scaling
+            'num_steps': 12,      # Reduced from typical fractal analysis
+            'confidence': 'high',
+            'reason': 'near-linear curve (D~1.0-1.1) - efficient parameter set for smooth interfaces',
+            'rotation_angles': [0],  # No rotation needed for near-linear
+            'rotation_enabled': False
         }
 
     elif interface_type == 'extreme_turning_fractal':
@@ -446,8 +513,8 @@ def suggest_optimal_parameters_adaptive(features, implementation="basic_box_coun
             elif interface_type in ['koch_curve', 'complex_fractal']:
                 # Moderate benefit - test key angles
                 return [0, 15, 30, 45, 60, 75, 90], True
-            elif interface_type == 'straight_line':
-                # Straight lines typically don't benefit from rotation
+            elif interface_type in ['straight_line', 'near_linear']:
+                # Straight and near-linear curves don't benefit from rotation
                 return [0], False
             else:
                 # Default: test basic angles

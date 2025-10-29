@@ -216,10 +216,22 @@ class InterfaceExtractor:
                     print(f"   ⚠️  No segments extracted by PLIC")
                 return None
 
-            # Convert segment list format to our format
+            # Convert segment list format to our format, filtering degenerate segments
             # PLIC returns: [((x1, y1), (x2, y2)), ...]
             # We need: array of [x1, y1, x2, y2]
-            segments = np.array([[x1, y1, x2, y2] for (x1, y1), (x2, y2) in segment_list])
+            min_length = 1e-12
+            segments = []
+            for (x1, y1), (x2, y2) in segment_list:
+                length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                if length > min_length:
+                    segments.append([x1, y1, x2, y2])
+
+            if not segments:
+                if self.debug:
+                    print(f"   ⚠️  All PLIC segments were degenerate (zero-length)")
+                return None
+
+            segments = np.array(segments)
 
             # Convert segments to points (for metadata)
             interface_points = []
@@ -277,8 +289,54 @@ class InterfaceExtractor:
                     print(f"   ⚠️  No segments extracted by CONREC")
                 return None
 
-            # Convert segment list format to our format
-            segments = np.array([[x1, y1, x2, y2] for (x1, y1), (x2, y2) in segment_list])
+            # Estimate grid spacing for adaptive filtering
+            # For rectilinear grids, x varies with i, y varies with j
+            dx_samples = np.abs(np.diff(x_grid[:min(10, x_grid.shape[0]), 0]))
+            dy_samples = np.abs(np.diff(y_grid[0, :min(10, x_grid.shape[1])]))
+
+            # Handle cases where diff might be zero (constant coordinates)
+            dx_samples = dx_samples[dx_samples > 0]
+            dy_samples = dy_samples[dy_samples > 0]
+
+            if len(dx_samples) > 0:
+                typical_dx = np.median(dx_samples)
+            else:
+                typical_dx = 0.001  # Fallback
+
+            if len(dy_samples) > 0:
+                typical_dy = np.median(dy_samples)
+            else:
+                typical_dy = 0.001  # Fallback
+
+            # Minimum segment length: 1% of typical grid spacing
+            # This filters numerical artifacts while keeping physically meaningful segments
+            # Segments smaller than 1% of grid are likely numerical errors from CONREC interpolation
+            grid_spacing = min(typical_dx, typical_dy)
+            min_length = grid_spacing * 0.01  # 1% of grid spacing
+
+            if self.debug:
+                print(f"   Grid spacing: dx={typical_dx:.6f}, dy={typical_dy:.6f}")
+                print(f"   Min segment length threshold: {min_length:.6e}")
+
+            # Convert segment list format to our format, filtering degenerate segments
+            segments = []
+            n_degenerate = 0
+            for (x1, y1), (x2, y2) in segment_list:
+                length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                if length > min_length:
+                    segments.append([x1, y1, x2, y2])
+                else:
+                    n_degenerate += 1
+
+            if not segments:
+                if self.debug:
+                    print(f"   ⚠️  All CONREC segments were degenerate (zero-length)")
+                return None
+
+            if n_degenerate > 0 and self.debug:
+                print(f"   ⚠️  Filtered {n_degenerate} degenerate segments ({n_degenerate/(len(segments)+n_degenerate)*100:.1f}%)")
+
+            segments = np.array(segments)
 
             # Convert segments to points (for metadata)
             interface_points = []
@@ -310,7 +368,7 @@ class InterfaceExtractor:
 
     def _points_to_segments(self, points: List[Tuple[float, float]]) -> np.ndarray:
         """
-        Convert list of points to segment array.
+        Convert list of points to segment array, filtering out degenerate segments.
 
         Args:
             points: List of (x, y) tuples
@@ -322,10 +380,21 @@ class InterfaceExtractor:
             return np.array([])
 
         segments = []
+        min_length = 1e-12  # Minimum segment length threshold
+
         for i in range(len(points) - 1):
             x1, y1 = points[i]
             x2, y2 = points[i + 1]
-            segments.append([x1, y1, x2, y2])
+
+            # Calculate segment length
+            length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+            # Only include segments above minimum length
+            if length > min_length:
+                segments.append([x1, y1, x2, y2])
+
+        if len(segments) == 0:
+            return np.array([])
 
         return np.array(segments)
 

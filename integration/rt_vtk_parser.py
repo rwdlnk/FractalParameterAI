@@ -12,6 +12,7 @@ standalone VTK parsing independent of the original FractalAnalyzer codebase.
 import numpy as np
 import re
 import os
+import glob
 from typing import Dict, Optional, Tuple, List
 from dataclasses import dataclass
 
@@ -332,6 +333,86 @@ class VTKParser:
         return 0.0
 
 
+def expand_brace_pattern(pattern: str) -> List[str]:
+    """
+    Expand brace patterns like RT160x200-{200,1999,2999}.vtk
+
+    Args:
+        pattern: Pattern with brace expansion
+
+    Returns:
+        List of expanded patterns
+    """
+    # Find brace patterns
+    brace_match = re.search(r'\{([^}]+)\}', pattern)
+
+    if not brace_match:
+        return [pattern]
+
+    # Extract comma-separated values
+    brace_content = brace_match.group(1)
+    values = [v.strip() for v in brace_content.split(',')]
+
+    # Generate expanded patterns
+    expanded = []
+    for value in values:
+        expanded_pattern = pattern[:brace_match.start()] + value + pattern[brace_match.end():]
+        expanded.append(expanded_pattern)
+
+    return expanded
+
+
+def find_vtk_files_with_pattern(directory: str, file_pattern: str, skip_mesh: bool = True) -> List[str]:
+    """
+    Find VTK files matching glob or brace patterns.
+
+    Supports:
+    - Glob patterns: RT160x200-1*.vtk
+    - Brace expansion: RT160x200-{200,1999,2999}.vtk
+    - Mixed: RT160x200-{1,2}*.vtk
+
+    Args:
+        directory: Directory to search
+        file_pattern: File pattern with glob/brace syntax
+        skip_mesh: Skip mesh files
+
+    Returns:
+        Sorted list of VTK file paths
+    """
+    # Expand brace patterns first
+    expanded_patterns = expand_brace_pattern(file_pattern)
+
+    # Collect all matching files
+    all_files = []
+    for pattern in expanded_patterns:
+        # Create full path pattern
+        full_pattern = os.path.join(directory, pattern)
+
+        # Use glob to find matching files
+        matched_files = glob.glob(full_pattern)
+        all_files.extend(matched_files)
+
+    # Filter out mesh files if requested
+    if skip_mesh:
+        all_files = [f for f in all_files if 'Mesh' not in os.path.basename(f)]
+
+    # Remove duplicates and sort numerically
+    all_files = list(set(all_files))
+
+    def extract_time_number(filepath):
+        """Extract numerical time value from filename for sorting."""
+        filename = os.path.basename(filepath)
+        match = re.search(r'-(\d+)\.vtk$', filename)
+        if match:
+            return int(match.group(1))
+        else:
+            return float('inf')
+
+    all_files.sort(key=extract_time_number)
+
+    return all_files
+
+
 def find_vtk_files(directory: str, pattern: Optional[str] = None, skip_mesh: bool = True) -> List[str]:
     """
     Find and sort VTK files in a directory.
@@ -358,8 +439,19 @@ def find_vtk_files(directory: str, pattern: Optional[str] = None, skip_mesh: boo
             if pattern is None or re.search(pattern, filename):
                 vtk_files.append(os.path.join(directory, filename))
 
-    # Sort by filename (which usually corresponds to time order)
-    vtk_files.sort()
+    # Sort by numerical time value extracted from filename (not alphabetically)
+    # This handles filenames like RT160x200-0.vtk, RT160x200-1199.vtk, RT160x200-10000.vtk correctly
+    def extract_time_number(filepath):
+        """Extract numerical time value from filename for sorting."""
+        filename = os.path.basename(filepath)
+        match = re.search(r'-(\d+)\.vtk$', filename)
+        if match:
+            return int(match.group(1))
+        else:
+            # If no number found, sort alphabetically (fallback)
+            return float('inf')
+
+    vtk_files.sort(key=extract_time_number)
 
     return vtk_files
 
