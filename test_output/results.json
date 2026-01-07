@@ -1,0 +1,78 @@
+{
+  "success": true,
+  "file_path": "/media/rod/ResearchII_III/svofRuns/Dalziel_1999/160x200/slimMaster/RT160x200-10000.vtk",
+  "time": 10.0,
+  "parse_time": 0.06611895561218262,
+  "interface_extraction_time": 1.1250848770141602,
+  "interface_points": 6116,
+  "interface_segments": 6115,
+  "interface_bounds": {
+    "x_min": -0.0003384876165877561,
+    "x_max": 0.39963983772498596,
+    "y_min": 0.1648592411424145,
+    "y_max": 0.33232458496243095,
+    "width": 0.39997832534157374,
+    "height": 0.16746534382001646
+  },
+  "grid_shape": [
+    161,
+    201
+  ],
+  "analysis_types": [
+    "fractal"
+  ],
+  "fractal_dimension": 1.6404620453355556,
+  "fractal_r_squared": 0.9991450655772965,
+  "fractal_analysis_time": 19.53466820716858,
+  "fractal_interface_type": "koch_curve",
+  "fractal_suggested_parameters": {
+    "initial_delta": 0.07169969168778158,
+    "delta_factor": 1.2552083333333335,
+    "num_steps": 15.583333333333334,
+    "interface_type": "koch_curve",
+    "implementation": "basic_box_counting",
+    "source": "adaptive_learning",
+    "rotation_angles": [
+      0,
+      15,
+      30,
+      45,
+      60,
+      75,
+      90
+    ],
+    "rotation_enabled": true
+  },
+  "fractal_features": {
+    "n_segments": 6115,
+    "bbox_width": 0.4009572148125369,
+    "bbox_height": 0.170167221953868,
+    "bbox_area": 0.06822977536700969,
+    "characteristic_length": 0.26120829880960844,
+    "min_segment_length": 9.309862354282598e-07,
+    "max_segment_length": 0.004999401457395797,
+    "mean_segment_length": 0.0020379338936067476,
+    "segment_length_std": 0.0010738573073590856,
+    "segment_length_cv": 0.5269342926355365,
+    "angle_std": 1.7849428307983422,
+    "angle_range": 6.28293844482997,
+    "direction_changes": 3510,
+    "direction_change_rate": 0.5739983646770237,
+    "tortuosity": 30.633399223786224,
+    "dimension_estimate": 2.0,
+    "total_length": 12.461965759405262,
+    "euclidean_length": 0.40680975912489636,
+    "aspect_ratio": 0.4244024441196994,
+    "linearity_r_squared": 0.003117804755165904,
+    "complexity_score": 1.0245542659202258,
+    "scale_ratio": 5369.429025117407,
+    "density": 89623.62778046531,
+    "connectivity_ratio": 0.2371606149820085
+  },
+  "total_analysis_time": 20.824557065963745,
+  "_metadata": {
+    "generated_by": "RefactoredRTAnalyzer",
+    "timestamp": "2025-10-15T15:20:38.291299",
+    "version": "1.0"
+  }
+}

@@ -1,0 +1,173 @@
+{
+  "success": true,
+  "file_path": "test_temporal/RT160x200-10000.vtk",
+  "time": 10.0,
+  "parse_time": 0.06514668464660645,
+  "interface_extraction_time": 0.021112442016601562,
+  "interface_points": 1059,
+  "interface_segments": 882,
+  "interface_bounds": {
+    "x_min": 0.00125,
+    "x_max": 0.39875000000000005,
+    "y_min": 0.21375,
+    "y_max": 0.30125,
+    "width": 0.3975000000000001,
+    "height": 0.08750000000000002
+  },
+  "grid_shape": [
+    161,
+    201
+  ],
+  "analysis_types": [
+    "fractal",
+    "power_spectrum"
+  ],
+  "fractal_dimension": 1.349024686592706,
+  "fractal_r_squared": 0.9959675666122098,
+  "fractal_analysis_time": 22.199549674987793,
+  "fractal_interface_type": "koch_curve",
+  "fractal_suggested_parameters": {
+    "initial_delta": 0.051192095867373874,
+    "delta_factor": 1.255208333333333,
+    "num_steps": 15,
+    "interface_type": "koch_curve",
+    "implementation": "basic_box_counting",
+    "source": "adaptive_learning",
+    "rotation_angles": [
+      0,
+      15,
+      30,
+      45,
+      60,
+      75,
+      90
+    ],
+    "rotation_enabled": true
+  },
+  "fractal_features": {
+    "n_segments": 882,
+    "bbox_width": 0.3975000000000001,
+    "bbox_height": 0.08750000000000002,
+    "bbox_area": 0.034781250000000014,
+    "characteristic_length": 0.18649731901558267,
+    "min_segment_length": 0.0024999999999999467,
+    "max_segment_length": 0.003535533905932819,
+    "mean_segment_length": 0.0027066371512972365,
+    "segment_length_std": 0.00041386092361734726,
+    "segment_length_cv": 0.15290594386779835,
+    "angle_std": 1.5589808714301243,
+    "angle_range": 4.71238898038469,
+    "direction_changes": 562,
+    "direction_change_rate": 0.63718820861678,
+    "tortuosity": 5.971634949163593,
+    "dimension_estimate": 2.0,
+    "total_length": 2.3872539674441624,
+    "euclidean_length": 0.3997655562951867,
+    "aspect_ratio": 0.22012578616352202,
+    "linearity_r_squared": 0.022429365071202554,
+    "complexity_score": 0.9933642287343876,
+    "scale_ratio": 1.4142135058046175,
+    "density": 25358.49049312922,
+    "connectivity_ratio": 1.0
+  },
+  "power_spectrum": {
+    "interface_spectrum": {
+      "power_law_slope": -2.3033889950800948,
+      "power_law_r_squared": 0.1943688601596426,
+      "dominant_wavelength": 0.07959096109839817,
+      "cutoff_wavelength": 0.03979548054919908,
+      "total_energy": 2.3788643011641173,
+      "peak_power": 0.023247804522255073,
+      "n_modes": 437,
+      "domain_length": 0.3975000000000001,
+      "wavenumber_range": [
+        15.788690626343097,
+        6899.657803711933
+      ],
+      "field_name": "interface_height"
+    },
+    "vof_spectrum": {
+      "power_law_slope": -1.514018317018403,
+      "power_law_r_squared": 0.8838892854075002,
+      "dominant_wavelength": 0.24999999999999992,
+      "cutoff_wavelength": 0.21199957600127192,
+      "total_energy": 1057.8912976617378,
+      "peak_power": 171.2093908256177,
+      "n_modes": 43,
+      "domain_length": 0.3975000000000001,
+      "wavenumber_range": [
+        15.70796326794897,
+        1662.4577257358242
+      ],
+      "field_name": "F",
+      "grid_shape": [
+        160,
+        200
+      ]
+    },
+    "u_velocity_spectrum": {
+      "power_law_slope": -3.3408335548132744,
+      "power_law_r_squared": 0.9426492240100082,
+      "dominant_wavelength": 0.1666666666666666,
+      "cutoff_wavelength": 0.03432089147276154,
+      "total_energy": 0.17782409608428115,
+      "peak_power": 0.002773434572458865,
+      "n_modes": 43,
+      "domain_length": 0.3975000000000001,
+      "wavenumber_range": [
+        15.70796326794897,
+        1662.4577257358242
+      ],
+      "field_name": "u",
+      "grid_shape": [
+        160,
+        200
+      ]
+    },
+    "v_velocity_spectrum": {
+      "power_law_slope": -2.9001840093431897,
+      "power_law_r_squared": 0.8925453770906242,
+      "dominant_wavelength": 0.07819203842790992,
+      "cutoff_wavelength": 0.038114697690364116,
+      "total_energy": 0.3636033129673367,
+      "peak_power": 0.008459501221310077,
+      "n_modes": 43,
+      "domain_length": 0.3975000000000001,
+      "wavenumber_range": [
+        15.70796326794897,
+        1662.4577257358242
+      ],
+      "field_name": "v",
+      "grid_shape": [
+        160,
+        200
+      ]
+    },
+    "tke_spectrum": {
+      "power_law_slope": -3.3408335548132744,
+      "power_law_r_squared": 0.9426492240100082,
+      "dominant_wavelength": 0.1666666666666666,
+      "cutoff_wavelength": 0.03432089147276154,
+      "total_energy": 0.27071370452580895,
+      "peak_power": 0.002773434572458865,
+      "n_modes": 43,
+      "domain_length": 0.3975000000000001,
+      "wavenumber_range": [
+        15.70796326794897,
+        1662.4577257358242
+      ],
+      "field_name": "turbulent_kinetic_energy",
+      "grid_shape": [
+        160,
+        200
+      ]
+    },
+    "power_spectrum_analysis_time": 5.792127847671509
+  },
+  "total_analysis_time": 28.09671950340271,
+  "_metadata": {
+    "generated_by": "RefactoredRTAnalyzer",
+    "timestamp": "2025-10-16T20:13:05.908242",
+    "version": "1.0"
+  }
+}

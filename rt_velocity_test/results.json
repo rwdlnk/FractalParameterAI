@@ -1,0 +1,97 @@
+{
+  "success": true,
+  "file_path": "test_temporal/RT160x200-10000.vtk",
+  "time": 10.0,
+  "parse_time": 0.07100653648376465,
+  "interface_extraction_time": 0.02148914337158203,
+  "interface_points": 1059,
+  "interface_segments": 882,
+  "interface_bounds": {
+    "x_min": 0.00125,
+    "x_max": 0.39875000000000005,
+    "y_min": 0.21375,
+    "y_max": 0.30125,
+    "width": 0.3975000000000001,
+    "height": 0.08750000000000002
+  },
+  "grid_shape": [
+    161,
+    201
+  ],
+  "analysis_types": [
+    "fractal",
+    "velocity"
+  ],
+  "fractal_dimension": 1.349024686592704,
+  "fractal_r_squared": 0.9959675666122098,
+  "fractal_analysis_time": 21.939589500427246,
+  "fractal_interface_type": "koch_curve",
+  "fractal_suggested_parameters": {
+    "initial_delta": 0.05119209586737389,
+    "delta_factor": 1.2552083333333335,
+    "num_steps": 15,
+    "interface_type": "koch_curve",
+    "implementation": "basic_box_counting",
+    "source": "adaptive_learning",
+    "rotation_angles": [
+      0,
+      15,
+      30,
+      45,
+      60,
+      75,
+      90
+    ],
+    "rotation_enabled": true
+  },
+  "fractal_features": {
+    "n_segments": 882,
+    "bbox_width": 0.3975000000000001,
+    "bbox_height": 0.08750000000000002,
+    "bbox_area": 0.034781250000000014,
+    "characteristic_length": 0.18649731901558267,
+    "min_segment_length": 0.0024999999999999467,
+    "max_segment_length": 0.003535533905932819,
+    "mean_segment_length": 0.0027066371512972365,
+    "segment_length_std": 0.00041386092361734726,
+    "segment_length_cv": 0.15290594386779835,
+    "angle_std": 1.5589808714301243,
+    "angle_range": 4.71238898038469,
+    "direction_changes": 562,
+    "direction_change_rate": 0.63718820861678,
+    "tortuosity": 5.971634949163593,
+    "dimension_estimate": 2.0,
+    "total_length": 2.3872539674441624,
+    "euclidean_length": 0.3997655562951867,
+    "aspect_ratio": 0.22012578616352202,
+    "linearity_r_squared": 0.022429365071202554,
+    "complexity_score": 0.9933642287343876,
+    "scale_ratio": 1.4142135058046175,
+    "density": 25358.49049312922,
+    "connectivity_ratio": 1.0
+  },
+  "velocity": {
+    "u_mean": 1.1131803414471397e-10,
+    "v_mean": -2.3269340554992245e-09,
+    "u_rms": 0.003965347443312848,
+    "v_rms": 0.00637039634475247,
+    "velocity_magnitude_mean": 0.004007982156909938,
+    "velocity_magnitude_rms": 0.007503727735960894,
+    "velocity_magnitude_max": 0.04930225923210716,
+    "turbulent_kinetic_energy": 2.8152964967711684e-05,
+    "reynolds_stress": -1.7925952001714833e-06,
+    "turbulence_intensity": 2277621.7784989225,
+    "velocity_grid_shape": [
+      160,
+      200
+    ],
+    "velocity_n_points": 32000,
+    "velocity_analysis_time": 0.0016922950744628906
+  },
+  "total_analysis_time": 22.05690336227417,
+  "_metadata": {
+    "generated_by": "RefactoredRTAnalyzer",
+    "timestamp": "2025-10-16T20:32:06.710165",
+    "version": "1.0"
+  }
+}

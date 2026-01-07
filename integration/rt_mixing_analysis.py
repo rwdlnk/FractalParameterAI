@@ -34,6 +34,7 @@ class MixingStatistics:
 
     # Mixing quality metrics
     mixing_efficiency: float  # Efficiency of mixing (0 = unmixed, 1 = perfect)
+    mixing_width_integral: float  # Dalziel's h_{1,1} = 2 × ∫ C̄(1-C̄) dz [meters]
     concentration_variance: float  # Variance of VOF field
     segregation_index: float  # Danckwerts segregation index
 
@@ -187,6 +188,33 @@ class MixingAnalyzer:
             print(f"      Mixing efficiency: {mixing_efficiency:.4f}")
 
         # ============================================
+        # 4.5. Compute mixing width integral (Youngs' W, Dalziel's h_{1,1})
+        # ============================================
+        # Youngs (1984) Eq. (3): W = ∫ C̄(1-C̄) dz (mixedness)
+        #
+        # Dalziel (1999) Eq. (6): h_Integral = ∫_{-H/2}^{H/2} C̄(1-C̄) dz
+        # Dalziel (1999) Eq. (7): h_{m,n} = [(m+n)^(m+n)] / [m^n × n^m] × ∫_{-H/2}^{0} C̄^m(1-C̄)^n dz
+        #
+        # For m = n = 1:
+        #   h_{1,1} = [2^2] / [1^1 × 1^1] × ∫_{-H/2}^{0} C̄(1-C̄) dz
+        #   h_{1,1} = 4 ∫_{-H/2}^{0} C̄(1-C̄) dz
+        #
+        # Assuming symmetry about the initial interface:
+        #   h_{1,1} = 4 ∫_{-H/2}^{0} C̄(1-C̄) dz = 2 ∫_{-H/2}^{H/2} C̄(1-C̄) dz = 2W
+        #
+        # Our domain is 0 to H, equivalent to Dalziel's -H/2 to H/2:
+        #   W = ∫_{0}^{H} C̄(1-C̄) dy
+        #   h_{1,1} = 2W
+        #
+        integrand = mean_f_profile * (1.0 - mean_f_profile)
+        W = np.trapz(integrand, y_coords)
+        mixing_width_integral = 2.0 * W  # Apply Dalziel's factor of 2 for h_{1,1}
+
+        if self.debug:
+            print(f"      Youngs' W: {W:.6f} m")
+            print(f"      Dalziel h_{{1,1}}: {mixing_width_integral:.6f} m")
+
+        # ============================================
         # 5. Compute segregation index (Danckwerts)
         # ============================================
         # Segregation index: I = σ²/σ²_max
@@ -217,6 +245,7 @@ class MixingAnalyzer:
             unmixed_light_fraction=unmixed_light_fraction,
             unmixed_heavy_fraction=unmixed_heavy_fraction,
             mixing_efficiency=mixing_efficiency,
+            mixing_width_integral=mixing_width_integral,
             concentration_variance=variance_f,
             segregation_index=segregation_index,
             mean_f_profile=mean_f_profile,

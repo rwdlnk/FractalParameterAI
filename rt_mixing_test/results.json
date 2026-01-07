@@ -1,0 +1,92 @@
+{
+  "success": true,
+  "file_path": "test_temporal/RT160x200-10000.vtk",
+  "time": 10.0,
+  "parse_time": 0.06595754623413086,
+  "interface_extraction_time": 0.021575450897216797,
+  "interface_points": 1059,
+  "interface_segments": 882,
+  "interface_bounds": {
+    "x_min": 0.00125,
+    "x_max": 0.39875000000000005,
+    "y_min": 0.21375,
+    "y_max": 0.30125,
+    "width": 0.3975000000000001,
+    "height": 0.08750000000000002
+  },
+  "grid_shape": [
+    161,
+    201
+  ],
+  "analysis_types": [
+    "fractal",
+    "mixing"
+  ],
+  "fractal_dimension": 1.3490246865927054,
+  "fractal_r_squared": 0.9959675666122102,
+  "fractal_analysis_time": 22.190757989883423,
+  "fractal_interface_type": "koch_curve",
+  "fractal_suggested_parameters": {
+    "initial_delta": 0.051192095867373895,
+    "delta_factor": 1.2552083333333333,
+    "num_steps": 15,
+    "interface_type": "koch_curve",
+    "implementation": "basic_box_counting",
+    "source": "adaptive_learning",
+    "rotation_angles": [
+      0,
+      15,
+      30,
+      45,
+      60,
+      75,
+      90
+    ],
+    "rotation_enabled": true
+  },
+  "fractal_features": {
+    "n_segments": 882,
+    "bbox_width": 0.3975000000000001,
+    "bbox_height": 0.08750000000000002,
+    "bbox_area": 0.034781250000000014,
+    "characteristic_length": 0.18649731901558267,
+    "min_segment_length": 0.0024999999999999467,
+    "max_segment_length": 0.003535533905932819,
+    "mean_segment_length": 0.0027066371512972365,
+    "segment_length_std": 0.00041386092361734726,
+    "segment_length_cv": 0.15290594386779835,
+    "angle_std": 1.5589808714301243,
+    "angle_range": 4.71238898038469,
+    "direction_changes": 562,
+    "direction_change_rate": 0.63718820861678,
+    "tortuosity": 5.971634949163593,
+    "dimension_estimate": 2.0,
+    "total_length": 2.3872539674441624,
+    "euclidean_length": 0.3997655562951867,
+    "aspect_ratio": 0.22012578616352202,
+    "linearity_r_squared": 0.022429365071202554,
+    "complexity_score": 0.9933642287343876,
+    "scale_ratio": 1.4142135058046175,
+    "density": 25358.49049312922,
+    "connectivity_ratio": 1.0
+  },
+  "mixing": {
+    "mixing_zone_width": -0.49750000000000005,
+    "upper_boundary": 0.00125,
+    "lower_boundary": 0.49875,
+    "interface_position": 0.23875,
+    "mixed_fraction": 0.08003125,
+    "unmixed_light_fraction": 0.44990625,
+    "unmixed_heavy_fraction": 0.456,
+    "mixing_efficiency": 0.06749589324577032,
+    "concentration_variance": 0.23312602103348623,
+    "segregation_index": 0.9325041067542297,
+    "mixing_analysis_time": 0.0013020038604736328
+  },
+  "total_analysis_time": 22.299099922180176,
+  "_metadata": {
+    "generated_by": "RefactoredRTAnalyzer",
+    "timestamp": "2025-10-16T20:41:07.649791",
+    "version": "1.0"
+  }
+}

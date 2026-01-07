@@ -1,0 +1,245 @@
+{
+  "success": true,
+  "n_files": 3,
+  "times": [
+    10.0,
+    10.2,
+    10.4
+  ],
+  "results": [
+    {
+      "success": true,
+      "file_path": "test_temporal/RT160x200-10000.vtk",
+      "time": 10.0,
+      "parse_time": 0.06344819068908691,
+      "interface_extraction_time": 0.01972341537475586,
+      "interface_points": 1059,
+      "interface_segments": 1058,
+      "interface_bounds": {
+        "x_min": 0.00125,
+        "x_max": 0.39875000000000005,
+        "y_min": 0.21375,
+        "y_max": 0.30125,
+        "width": 0.3975000000000001,
+        "height": 0.08750000000000002
+      },
+      "grid_shape": [
+        161,
+        201
+      ],
+      "analysis_types": [
+        "fractal"
+      ],
+      "fractal_dimension": 1.349024686592704,
+      "fractal_r_squared": 0.9959675666122098,
+      "fractal_analysis_time": 20.037972688674927,
+      "fractal_interface_type": "koch_curve",
+      "fractal_suggested_parameters": {
+        "initial_delta": 0.051192095867373895,
+        "delta_factor": 1.2552083333333335,
+        "num_steps": 15.583333333333334,
+        "interface_type": "koch_curve",
+        "implementation": "basic_box_counting",
+        "source": "adaptive_learning",
+        "rotation_angles": [
+          0,
+          15,
+          30,
+          45,
+          60,
+          75,
+          90
+        ],
+        "rotation_enabled": true
+      },
+      "fractal_features": {
+        "n_segments": 1058,
+        "bbox_width": 0.3975000000000001,
+        "bbox_height": 0.08750000000000002,
+        "bbox_area": 0.034781250000000014,
+        "characteristic_length": 0.18649731901558267,
+        "min_segment_length": 0.0,
+        "max_segment_length": 0.003535533905932819,
+        "mean_segment_length": 0.00225638371214004,
+        "segment_length_std": 0.001076444398744838,
+        "segment_length_cv": 0.4770661768415619,
+        "angle_std": 1.4402458618146696,
+        "angle_range": 4.71238898038469,
+        "direction_changes": 726,
+        "direction_change_rate": 0.6862003780718336,
+        "tortuosity": 5.971634949163593,
+        "dimension_estimate": 2.0,
+        "total_length": 2.3872539674441624,
+        "euclidean_length": 0.3997655562951867,
+        "aspect_ratio": 0.22012578616352202,
+        "linearity_r_squared": 0.01896963761437464,
+        "complexity_score": 0.9882972548936202,
+        "scale_ratio": 35355339.05932819,
+        "density": 30418.688142551826,
+        "connectivity_ratio": 1.0
+      },
+      "total_analysis_time": 20.14157462120056
+    },
+    {
+      "success": true,
+      "file_path": "test_temporal/RT160x200-10200.vtk",
+      "time": 10.2,
+      "parse_time": 0.06324577331542969,
+      "interface_extraction_time": 0.018881797790527344,
+      "interface_points": 1135,
+      "interface_segments": 1134,
+      "interface_bounds": {
+        "x_min": 0.00125,
+        "x_max": 0.39875000000000005,
+        "y_min": 0.21125,
+        "y_max": 0.30374999999999996,
+        "width": 0.3975000000000001,
+        "height": 0.09249999999999997
+      },
+      "grid_shape": [
+        161,
+        201
+      ],
+      "analysis_types": [
+        "fractal"
+      ],
+      "fractal_dimension": 1.3893237255808013,
+      "fractal_r_squared": 0.9968142597235637,
+      "fractal_analysis_time": 13.539055824279785,
+      "fractal_interface_type": "koch_curve",
+      "fractal_suggested_parameters": {
+        "initial_delta": 0.052634408933942695,
+        "delta_factor": 1.2552083333333335,
+        "num_steps": 15.583333333333334,
+        "interface_type": "koch_curve",
+        "implementation": "basic_box_counting",
+        "source": "adaptive_learning",
+        "rotation_angles": [
+          0,
+          15,
+          30,
+          45,
+          60,
+          75,
+          90
+        ],
+        "rotation_enabled": true
+      },
+      "fractal_features": {
+        "n_segments": 1134,
+        "bbox_width": 0.3975000000000001,
+        "bbox_height": 0.09249999999999997,
+        "bbox_area": 0.036768749999999996,
+        "characteristic_length": 0.19175179269044657,
+        "min_segment_length": 0.0,
+        "max_segment_length": 0.003535533905932819,
+        "mean_segment_length": 0.0022494652361119503,
+        "segment_length_std": 0.001090828195236908,
+        "segment_length_cv": 0.4849277638224607,
+        "angle_std": 1.4467222477325687,
+        "angle_range": 4.71238898038469,
+        "direction_changes": 783,
+        "direction_change_rate": 0.6904761904761905,
+        "tortuosity": 6.402039890744723,
+        "dimension_estimate": 2.0,
+        "total_length": 2.5508935777509514,
+        "euclidean_length": 0.39845012234908406,
+        "aspect_ratio": 0.23270440251572316,
+        "linearity_r_squared": 0.02227033621241169,
+        "complexity_score": 0.9989272662915355,
+        "scale_ratio": 35355339.05932819,
+        "density": 30841.40736130163,
+        "connectivity_ratio": 1.0
+      },
+      "total_analysis_time": 13.64247441291809
+    },
+    {
+      "success": true,
+      "file_path": "test_temporal/RT160x200-10400.vtk",
+      "time": 10.4,
+      "parse_time": 0.06154465675354004,
+      "interface_extraction_time": 0.01850152015686035,
+      "interface_points": 1126,
+      "interface_segments": 1125,
+      "interface_bounds": {
+        "x_min": 0.00125,
+        "x_max": 0.39875000000000005,
+        "y_min": 0.20875,
+        "y_max": 0.30625,
+        "width": 0.3975000000000001,
+        "height": 0.09750000000000003
+      },
+      "grid_shape": [
+        161,
+        201
+      ],
+      "analysis_types": [
+        "fractal"
+      ],
+      "fractal_dimension": 1.3761567015345948,
+      "fractal_r_squared": 0.9973514030187984,
+      "fractal_analysis_time": 12.993075370788574,
+      "fractal_interface_type": "koch_curve",
+      "fractal_suggested_parameters": {
+        "initial_delta": 0.054038239500899886,
+        "delta_factor": 1.2552083333333335,
+        "num_steps": 15.583333333333334,
+        "interface_type": "koch_curve",
+        "implementation": "basic_box_counting",
+        "source": "adaptive_learning",
+        "rotation_angles": [
+          0,
+          15,
+          30,
+          45,
+          60,
+          75,
+          90
+        ],
+        "rotation_enabled": true
+      },
+      "fractal_features": {
+        "n_segments": 1125,
+        "bbox_width": 0.3975000000000001,
+        "bbox_height": 0.09750000000000003,
+        "bbox_area": 0.03875625000000002,
+        "characteristic_length": 0.19686607122610036,
+        "min_segment_length": 0.0,
+        "max_segment_length": 0.003535533905932819,
+        "mean_segment_length": 0.002242253967444162,
+        "segment_length_std": 0.0011055754815845528,
+        "segment_length_cv": 0.4930643220305294,
+        "angle_std": 1.435674191771084,
+        "angle_range": 4.71238898038469,
+        "direction_changes": 765,
+        "direction_change_rate": 0.68,
+        "tortuosity": 6.262821969054321,
+        "dimension_estimate": 2.0,
+        "total_length": 2.5225357133746824,
+        "euclidean_length": 0.4027794061269767,
+        "aspect_ratio": 0.24528301886792456,
+        "linearity_r_squared": 0.009967243129505615,
+        "complexity_score": 0.9762584504043372,
+        "scale_ratio": 35355339.05932819,
+        "density": 29027.576122489707,
+        "connectivity_ratio": 1.0
+      },
+      "total_analysis_time": 13.094027519226074
+    }
+  ],
+  "fractal_dimensions": [
+    1.349024686592704,
+    1.3893237255808013,
+    1.3761567015345948
+  ],
+  "fractal_r_squareds": [
+    0.9959675666122098,
+    0.9968142597235637,
+    0.9973514030187984
+  ],
+  "_metadata": {
+    "generated_by": "RefactoredRTAnalyzer",
+    "timestamp": "2025-10-15T15:22:17.470776",
+    "version": "1.0"
+  }
+}
