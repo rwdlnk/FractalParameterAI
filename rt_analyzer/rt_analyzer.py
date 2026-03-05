@@ -12,12 +12,19 @@ from skimage import measure
 
 class RTAnalyzer:
     """Complete Rayleigh-Taylor simulation analyzer with fractal dimension calculation."""
-    
-    def __init__(self, output_dir="./rt_analysis"):
-        """Initialize the RT analyzer."""
+
+    def __init__(self, output_dir="./rt_analysis", rt_physics=None):
+        """Initialize the RT analyzer.
+
+        Args:
+            output_dir: Output directory for results
+            rt_physics: Optional RTPhysics instance for nondimensionalization.
+                        When provided, results include dimensionless quantities.
+        """
         self.output_dir = output_dir
+        self.rt_physics = rt_physics
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Create fractal analyzer instance
         try:
             from fractal_analyzer.main import FractalAnalyzer
@@ -243,7 +250,7 @@ class RTAnalyzer:
         _, _, r_value, _, _ = stats.linregress(log_sizes, log_counts)
         r_squared = r_value**2
         
-        return {
+        result = {
             'dimension': dimension,
             'error': error,
             'r_squared': r_squared,
@@ -252,6 +259,11 @@ class RTAnalyzer:
             'bounding_box': bounding_box,
             'segments': segments
         }
+
+        if self.rt_physics is not None:
+            result['box_sizes_nondim'] = self.rt_physics.nondim_box_size(box_sizes)
+
+        return result
     
     def analyze_vtk_file(self, vtk_file, output_subdir=None):
         """Perform complete analysis on a single VTK file."""
@@ -340,7 +352,7 @@ class RTAnalyzer:
             plt.close()
         
         # Return analysis results
-        return {
+        result = {
             'time': data['time'],
             'h0': h0,
             'ht': mixing['ht'],
@@ -350,6 +362,14 @@ class RTAnalyzer:
             'fd_error': fd_results['error'],
             'fd_r_squared': fd_results['r_squared']
         }
+
+        if self.rt_physics is not None:
+            result['tau'] = float(self.rt_physics.nondim_time(data['time']))
+            result['ht_nondim'] = float(self.rt_physics.nondim_length(mixing['ht']))
+            result['hb_nondim'] = float(self.rt_physics.nondim_length(mixing['hb']))
+            result['h_total_nondim'] = float(self.rt_physics.nondim_length(mixing['h_total']))
+
+        return result
     
     def process_vtk_series(self, vtk_pattern, resolution=None):
         """Process a series of VTK files matching the given pattern."""

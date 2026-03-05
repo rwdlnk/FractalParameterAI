@@ -90,21 +90,23 @@ class MultifractalAnalyzer:
         
         return True
         
-    def compute_multifractal_spectrum(self, segments: List[Tuple], 
+    def compute_multifractal_spectrum(self, segments: List[Tuple],
                                     min_box_size: Optional[float] = None,
                                     q_values: Optional[List[float]] = None,
                                     output_dir: Optional[str] = None,
-                                    time_value: Optional[float] = None) -> Dict:
+                                    time_value: Optional[float] = None,
+                                    rt_physics=None) -> Dict:
         """
         Compute multifractal spectrum from interface segments.
-        
+
         Args:
             segments: List of line segments as ((x1,y1), (x2,y2)) tuples
             min_box_size: Minimum box size for analysis (default: auto-estimate)
             q_values: List of q moments to analyze (default: -5 to 5 in 0.5 steps)
             output_dir: Directory to save results (default: None)
             time_value: Time value for labeling plots (default: None)
-            
+            rt_physics: Optional RTPhysics instance for nondimensional box sizes
+
         Returns:
             dict: Multifractal spectrum results
         """
@@ -380,7 +382,7 @@ class MultifractalAnalyzer:
                                           output_dir, time_value)
         
         # Return results
-        return {
+        results = {
             'q_values': q_values,
             'tau': taus,
             'Dq': Dqs,
@@ -392,8 +394,16 @@ class MultifractalAnalyzer:
             'D2': D2,
             'alpha_width': alpha_width,
             'degree_multifractality': degree_multifractality,
-            'time': time_value
+            'time': time_value,
+            'box_sizes': box_sizes,
         }
+
+        if rt_physics is not None:
+            results['box_sizes_nondim'] = rt_physics.nondim_box_size(box_sizes)
+            if time_value is not None:
+                results['dimensionless_time'] = float(rt_physics.nondim_time(time_value))
+
+        return results
 
     def _create_multifractal_plots(self, q_values, Dqs, alpha, f_alpha, r_squared, 
                                  D0, output_dir, time_value):

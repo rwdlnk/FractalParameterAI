@@ -56,7 +56,7 @@ def segments_to_height_function(segments, num_points=1024):
     return x_uniform, y_uniform
 
 
-def calculate_power_spectral_density(x, y, method='welch'):
+def calculate_power_spectral_density(x, y, method='welch', domain_width=None):
     """
     Calculate power spectral density of height function.
 
@@ -64,10 +64,13 @@ def calculate_power_spectral_density(x, y, method='welch'):
         x: X coordinates (uniform spacing)
         y: Height function values
         method: 'welch', 'periodogram', or 'multitaper'
+        domain_width: Optional domain width L for wavenumber conversion.
+                      When provided, also returns wavenumbers k = 2*pi*f*L.
 
     Returns:
         freqs: Frequency array
         psd: Power spectral density
+        If domain_width is provided, returns (freqs, psd, wavenumbers) instead.
     """
     if len(x) < 4 or len(y) < 4:
         return np.array([]), np.array([])
@@ -97,10 +100,15 @@ def calculate_power_spectral_density(x, y, method='welch'):
             freqs = freqs[1:]
             psd = psd[1:]
 
+        if domain_width is not None:
+            wavenumbers = 2.0 * np.pi * freqs * domain_width
+            return freqs, psd, wavenumbers
         return freqs, psd
 
     except Exception as e:
         print(f"PSD calculation failed: {e}")
+        if domain_width is not None:
+            return np.array([]), np.array([]), np.array([])
         return np.array([]), np.array([])
 
 
@@ -197,7 +205,8 @@ def calculate_spectral_bandwidth(freqs, psd, fraction=0.95):
     return bandwidth
 
 
-def extract_power_spectrum_features(segments, method='welch', num_points=1024):
+def extract_power_spectrum_features(segments, method='welch', num_points=1024,
+                                    domain_width=None):
     """
     Extract comprehensive power spectrum features for AI parameter selection.
 
@@ -205,9 +214,11 @@ def extract_power_spectrum_features(segments, method='welch', num_points=1024):
         segments: Nx4 array of [x1, y1, x2, y2] segments
         method: PSD calculation method
         num_points: Interpolation points
+        domain_width: Optional domain width L for wavenumber k = 2*pi*f*L
 
     Returns:
-        features: Dictionary of spectral features
+        features: Dictionary of spectral features.
+                  Includes 'dominant_wavenumber' when domain_width is provided.
     """
     # Convert to height function
     x, y = segments_to_height_function(segments, num_points)
@@ -279,7 +290,7 @@ def extract_power_spectrum_features(segments, method='welch', num_points=1024):
     high_energy = np.trapz(psd[high_freq_mask], freqs[high_freq_mask])
     spectral_energy_ratio = low_energy / high_energy if high_energy > 0 else np.inf
 
-    return {
+    features = {
         'dominant_frequency': dominant_frequency,
         'spectral_slope': spectral_slope,
         'high_frequency_content': high_frequency_content,
@@ -289,6 +300,11 @@ def extract_power_spectrum_features(segments, method='welch', num_points=1024):
         'spectral_rolloff': spectral_rolloff,
         'spectral_energy_ratio': spectral_energy_ratio
     }
+
+    if domain_width is not None:
+        features['dominant_wavenumber'] = 2.0 * np.pi * dominant_frequency * domain_width
+
+    return features
 
 
 def suggest_parameters_from_spectrum(spectral_features, domain_scale=1.0):

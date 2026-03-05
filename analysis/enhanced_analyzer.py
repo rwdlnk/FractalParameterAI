@@ -134,28 +134,33 @@ def auto_detect_domain_dimensions(data_dirs, resolutions):
 
 def calculate_dimensionless_time_factor(A, g, H):
     """
-    NEW: Calculate the dimensionless time factor √(Ag/H).
-    
+    Calculate the dimensionless time factor √(Ag/H).
+
+    Thin wrapper around RTPhysics for backward compatibility.
+
     Args:
         A: Atwood number
         g: Gravitational acceleration (m/s²)
         H: Domain height (m)
-        
+
     Returns:
         float: √(Ag/H) factor for dimensionless time τ
     """
-    factor = np.sqrt(A * g / H)
+    from core.rt_physics import RTPhysics
+    # Use RTPhysics internally (L is not needed for time factor, use dummy)
+    rt = RTPhysics(A=A, g=g, H=H, L=1.0)
+    factor = rt.tau_factor
     print(f"📊 Dimensionless time factor √(Ag/H) = √({A:.3e} × {g:.2f} / {H:.4f}) = {factor:.4f} s⁻¹")
     return factor
 
 def convert_to_dimensionless_time(times, tau_factor):
     """
-    NEW: Convert simulation times to dimensionless time τ.
-    
+    Convert simulation times to dimensionless time τ.
+
     Args:
         times: Array of simulation times (seconds)
         tau_factor: √(Ag/H) factor
-        
+
     Returns:
         array: Dimensionless times τ = √(Ag/H) × t
     """
