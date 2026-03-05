@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+# examples/iterations_basic.py
+"""
+Basic example demonstrating fractal dimension analysis across different iteration levels.
+This example shows how the calculated fractal dimension converges as iteration level increases.
+"""
+import os
+import sys
+import time
+import matplotlib.pyplot as plt
+
+# Add the parent directory to the path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from fractal_analyzer import FractalAnalyzer
+from fractal_analyzer.analysis_tools import FractalAnalysisTools
+
+def main():
+    """Main function to demonstrate iteration analysis of Koch curve."""
+    # Create a timestamp-based output directory
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    output_dir = os.path.join(os.path.dirname(__file__), f"iteration_analysis_{timestamp}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Initialize the analyzer with Koch fractal type
+    fractal = 'koch'
+    analyzer = FractalAnalyzer(fractal)
+    analysis = FractalAnalysisTools(analyzer)
+    
+    # Define iteration levels to analyze
+    min_level = 1
+    max_level = 6
+    
+    print(f"\nAnalyzing {fractal} fractal from level {min_level} to {max_level}...")
+    
+    # Run the iteration analysis
+    levels, dimensions, errors, r_squared = analysis.analyze_iterations(
+        min_level=min_level,
+        max_level=max_level,
+        fractal_type=fractal,
+        no_plots=True  # We'll create our own plots
+    )
+    
+    # Create a plot of dimension vs. iteration level
+    plt.figure(figsize=(10, 6))
+    plt.errorbar(levels, dimensions, yerr=errors, fmt='o-', capsize=4, 
+                 color='blue', alpha=0.7, label='Calculated dimension')
+    
+    # Add theoretical dimension if available
+    if hasattr(analyzer.base, 'THEORETICAL_DIMENSIONS'):
+        theoretical_dimension = analyzer.base.THEORETICAL_DIMENSIONS.get(fractal)
+        if theoretical_dimension is not None:
+            plt.axhline(y=theoretical_dimension, color='green', linestyle=':', alpha=0.7,
+                      label=f'Theoretical: {theoretical_dimension:.4f}')
+    
+    # Add text box with convergence information
+    final_dimension = dimensions[-1]
+    final_error = errors[-1]
+    textstr = f'Final Dimension: {final_dimension:.6f}\nError: {final_error:.6f}'
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes, fontsize=12,
+            verticalalignment='top', bbox=props)
+    
+    # Set plot title and labels
+    plt.title(f'Fractal Dimension vs. Iteration Level - {fractal.capitalize()}')
+    plt.xlabel('Iteration Level')
+    plt.ylabel('Fractal Dimension')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    
+    # Save the plot
+    plot_filename = os.path.join(output_dir, f"{fractal}_dimension_vs_iteration.png")
+    plt.savefig(plot_filename, dpi=300)
+    plt.close()
+    print(f"Saved dimension vs. iteration plot to: {plot_filename}")
+    
+    # Create and save a summary report
+    report_filename = os.path.join(output_dir, f"{fractal}_iteration_analysis_report.txt")
+    with open(report_filename, 'w') as f:
+        f.write(f"FRACTAL ITERATION ANALYSIS REPORT\n")
+        f.write(f"===============================\n\n")
+        f.write(f"Fractal Type: {fractal.capitalize()}\n")
+        f.write(f"Iteration Levels: {min_level} to {max_level}\n\n")
+        
+        f.write(f"DETAILED RESULTS\n")
+        f.write(f"--------------\n")
+        f.write(f"{'Level':<8} {'Dimension':<12} {'Error':<12} {'R-squared':<12}\n")
+        
+        for i, level in enumerate(levels):
+            f.write(f"{level:<8} {dimensions[i]:12.6f} {errors[i]:12.6f} {r_squared[i]:12.6f}\n")
+        
+        f.write(f"\nCONVERGENCE ANALYSIS\n")
+        f.write(f"-------------------\n")
+        f.write(f"Final dimension (level {max_level}): {dimensions[-1]:.6f} ± {errors[-1]:.6f}\n")
+        
+        if hasattr(analyzer.base, 'THEORETICAL_DIMENSIONS'):
+            theoretical_dim = analyzer.base.THEORETICAL_DIMENSIONS.get(fractal)
+            if theoretical_dim is not None:
+                f.write(f"Theoretical dimension: {theoretical_dim:.6f}\n")
+                f.write(f"Difference: {abs(dimensions[-1] - theoretical_dim):.6f}\n")
+                convergence_rate = abs(dimensions[-1] - theoretical_dim) / theoretical_dim * 100
+                f.write(f"Convergence: {100 - convergence_rate:.2f}%\n")
+    
+    print(f"Saved analysis report to: {report_filename}")
+    print(f"\nFinal dimension ({fractal} at level {max_level}): {dimensions[-1]:.6f} ± {errors[-1]:.6f}")
+    print(f"Results saved to: {output_dir}")
+    
+    return 0
+
+if __name__ == "__main__":
+    main()

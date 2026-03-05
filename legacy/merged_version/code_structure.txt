@@ -1,0 +1,29 @@
+
+fractal-analyzer/                 # Main project directory
+├── fractal_analyzer/             # Core fractal analysis functionality
+│   ├── __init__.py               # Export FractalAnalyzer and other core classes
+│   ├── main.py                   # FractalAnalyzer implementation (already exists)
+│   ├── core.py                   # FractalBase implementation (already exists)
+│   ├── analysis.py               # BoxCounter implementation (already exists)
+│   ├── analysis_tools.py         # FractalAnalysisTools implementation (use the fixed version)
+│   ├── visualization.py          # FractalVisualizer implementation (already exists)
+│   ├── cli.py                    # Click-based CLI for fractal analysis (already exists)
+│   └── generators/               # Fractal generation algorithms (already exists)
+│
+├── rt_analyzer/                  # RT-specific analysis functionality
+│   ├── __init__.py               # Export RTAnalyzer
+│   ├── rt_analyzer.py            # Enhanced RTAnalyzer implementation (from previous steps)
+│   ├── rt_visualization.py       # RT-specific visualization utilities (from previous steps)
+│   └── cli.py                    # Command-line interface for RT analysis (existing rt_cli.py)
+│
+├── scripts/                      # Utility scripts
+│   ├── run_multifractal.py       # Script for multifractal analysis (updated to use enhanced RTAnalyzer)
+│   ├── analyze_temporal.py       # Script for temporal analysis (updated to use enhanced RTAnalyzer)
+│   └── resolution_analysis.py    # Script for resolution analysis (updated to use enhanced RTAnalyzer)
+│
+├── examples/                     # Example applications
+│   ├── fractal_examples/         # Examples for basic fractal analysis
+│   └── rt_examples/              # Examples for RT analysis (including temporal_analysis.py)
+│
+├── setup.py                      # Updated package installation script
+└── README.md                     # Project documentation

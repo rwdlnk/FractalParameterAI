@@ -1,0 +1,22 @@
+FRACTAL ITERATION ANALYSIS REPORT
+===============================
+
+Fractal Type: Koch
+Iteration Levels: 1 to 6
+
+DETAILED RESULTS
+--------------
+Level    Dimension    Error        R-squared   
+1            1.008814     0.006297     0.999455
+2            1.047283     0.016222     0.996652
+3            1.106296     0.018390     0.996146
+4            1.167142     0.018738     0.996404
+5            1.216295     0.014816     0.997927
+6            1.244074     0.012106     0.998676
+
+CONVERGENCE ANALYSIS
+-------------------
+Final dimension (level 6): 1.244074 ± 0.012106
+Theoretical dimension: 1.261860
+Difference: 0.017785
+Convergence: 98.59%

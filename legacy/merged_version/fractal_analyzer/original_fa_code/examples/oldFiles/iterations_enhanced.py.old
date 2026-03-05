@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+# examples/iterations_enhanced.py
+"""
+Enhanced example demonstrating fractal dimension analysis across different iteration levels.
+This example creates comprehensive visualizations and a detailed report of how 
+fractal dimension converges with increasing iteration levels.
+"""
+import os
+import sys
+import time
+import matplotlib.pyplot as plt
+import numpy as np
+import argparse
+
+# Add the parent directory to the path to allow imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from fractal_analyzer import FractalAnalyzer
+from fractal_analyzer.analysis_tools import FractalAnalysisTools
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Fractal Iteration Analysis")
+    parser.add_argument("-t", "--type", default="koch",
+                      choices=["koch", "sierpinski", "minkowski", "hilbert", "dragon"],
+                      help="Type of fractal to analyze")
+    parser.add_argument("--min-level", type=int, default=1,
+                      help="Minimum iteration level to analyze")
+    parser.add_argument("--max-level", type=int, default=7,
+                      help="Maximum iteration level to analyze")
+    parser.add_argument("-o", "--output", default=None,
+                      help="Output directory for saved plots")
+    parser.add_argument("--no-show", action="store_true",
+                      help="Do not display plots (only save)")
+    return parser.parse_args()
+
+def main():
+    """Main function for enhanced fractal iteration analysis."""
+    # Parse command line arguments
+    args = parse_args()
+    
+    # Create output directory based on arguments or timestamp
+    if args.output:
+        # If a relative path is provided, make it relative to the examples directory
+        if not os.path.isabs(args.output):
+            output_dir = os.path.join(os.path.dirname(__file__), args.output)
+        else:
+            output_dir = args.output
+    else:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        output_dir = os.path.join(os.path.dirname(__file__),
+                                f"{args.type}_iteration_analysis_{timestamp}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Initialize the analyzer with appropriate type
+    analyzer = FractalAnalyzer(args.type)
+    analysis = FractalAnalysisTools(analyzer)
+    
+    print(f"\n==== ITERATION ANALYSIS: {args.type.upper()} FRACTAL ====")
+    print(f"Analyzing levels: {args.min_level} to {args.max_level}")
+    print(f"Output directory: {output_dir}")
+    
+    # Run the iteration analysis
+    levels, dimensions, errors, r_squared = analysis.analyze_iterations(
+        min_level=args.min_level,
+        max_level=args.max_level,
+        fractal_type=args.type,
+        no_plots=True  # We'll create our own plots
+    )
+    
+    # Collect segments and dimensions for each level
+    all_segments = []
+    all_curves = []
+    all_box_sizes = []
+    all_box_counts = []
+    
+    print("\nPerforming detailed analysis for each level...")
+    for level in levels:
+        print(f"  Processing level {level}...")
+        curve, segments = analyzer.generate_fractal(args.type, level)
+        all_curves.append(curve)
+        all_segments.append(segments)
+        
+        # Calculate box counts for visualization
+        fd, error, box_sizes, box_counts, bounding_box, intercept = analyzer.calculate_fractal_dimension(segments)
+        all_box_sizes.append(box_sizes)
+        all_box_counts.append(box_counts)
+    
+    # Create comprehensive visualization
+    print(f"\nCreating comprehensive visualization...")
+    create_comprehensive_visualization(
+        args.type, levels, dimensions, errors, r_squared,
+        all_curves, all_segments, all_box_sizes, all_box_counts,
+        analyzer, output_dir
+    )
+    
+    # Generate a detailed report
+    generate_iteration_report(
+        args.type, levels, dimensions, errors, r_squared,
+        analyzer, all_segments, output_dir
+    )
+    
+    # Plot convergence graph
+    plot_convergence_graph(
+        args.type, levels, dimensions, errors, analyzer, output_dir
+    )
+    
+    print(f"\nFinal dimension ({args.type} at level {args.max_level}): {dimensions[-1]:.6f} ± {errors[-1]:.6f}")
+    print(f"All visualizations and analysis saved to: {output_dir}")
+    
+    return 0
+
+def create_comprehensive_visualization(fractal_type, levels, dimensions, errors, 
+                                     r_squared, all_curves, all_segments, 
+                                     all_box_sizes, all_box_counts, 
+                                     analyzer, output_dir):
+    """Create a comprehensive visualization of iteration analysis."""
+    # Create figure with multiple subplots
+    fig = plt.figure(figsize=(15, 10))
+    
+    # 1. Dimension convergence (top left)
+    ax1 = fig.add_subplot(2, 2, 1)
+    ax1.errorbar(levels, dimensions, yerr=errors, fmt='o-', capsize=4,
+               color='blue', alpha=0.7, label='Calculated dimension')
+    
+    # Add theoretical dimension if available
+    theoretical_dimension = analyzer.base.THEORETICAL_DIMENSIONS.get(fractal_type)
+    if theoretical_dimension is not None:
+        ax1.axhline(y=theoretical_dimension, color='green', linestyle=':', alpha=0.7,
+                  label=f'Theoretical: {theoretical_dimension:.4f}')
+    
+    # Set dimension plot properties
+    ax1.set_title('Dimension Convergence with Iteration')
+    ax1.set_xlabel('Iteration Level')
+    ax1.set_ylabel('Fractal Dimension')
+    ax1.grid(True, linestyle='--', alpha=0.7)
+    ax1.legend()
+    ax1.set_xlim(min(levels) - 0.5, max(levels) + 0.5)  # Add padding to x-axis
+    y_min = min(dimensions) - max(errors) - 0.05
+    y_max = max(dimensions) + max(errors) + 0.05
+    ax1.set_ylim(y_min, y_max)  # Add padding to y-axis
+
+    # Add a secondary y-axis for R-squared values
+    ax1b = ax1.twinx()
+    ax1b.plot(levels, r_squared, 'g--', marker='.', alpha=0.5, label='R-squared')
+    ax1b.set_ylabel('R-squared', color='g')
+    ax1b.tick_params(axis='y', labelcolor='g')
+    ax1b.set_ylim(0.9, 1.01)
+    
+    # 2. Multi-level curve comparison (top right)
+    ax2 = fig.add_subplot(2, 2, 2)
+    
+    # Plot 3 selected levels for comparison
+    selected_levels = [levels[0], levels[len(levels)//2], levels[-1]]
+    colors = ['blue', 'green', 'red']
+    
+    for i, level in enumerate(selected_levels):
+        level_idx = levels.index(level)
+        curve = all_curves[level_idx]
+        x, y = zip(*curve)
+        ax2.plot(x, y, color=colors[i], linewidth=0.8+i*0.4,
+               label=f'Level {level} (D={dimensions[level_idx]:.4f})')
+    
+    # Set curve plot properties
+    ax2.set_title('Fractal Curve at Different Iteration Levels')
+    ax2.set_aspect('equal')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    # Calculate the actual data bounds
+    x_points_flat = [p for curve in all_curves for x, y in curve for p in [x]]
+    y_points_flat = [p for curve in all_curves for x, y in curve for p in [y]]
+    if x_points_flat and y_points_flat:
+        x_min, x_max = min(x_points_flat), max(x_points_flat)
+        y_min, y_max = min(y_points_flat), max(y_points_flat)
+        margin = max(x_max - x_min, y_max - y_min) * 0.1  # 10% margin
+        ax2.set_xlim(x_min - margin, x_max + margin)
+        ax2.set_ylim(y_min - margin, y_max + margin)
+
+    # 3. Final level loglog plot (bottom left)
+    ax3 = fig.add_subplot(2, 2, 3)
+    
+    # Plot the loglog data for the final level
+    final_box_sizes = all_box_sizes[-1]
+    final_box_counts = all_box_counts[-1]
+    
+    # Calculate dimension for the final level
+    fd, error, intercept = analyzer.box_counter.calculate_fractal_dimension(
+        final_box_sizes, final_box_counts)
+    
+    # Plot data points
+    ax3.loglog(final_box_sizes, final_box_counts, 'bo-', 
+             label='Data points', markersize=4)
+    
+    # Plot linear regression line
+    log_sizes = np.log(final_box_sizes)
+    fit_counts = np.exp(intercept + (-fd) * log_sizes)
+    ax3.loglog(final_box_sizes, fit_counts, 'r-',
+             label=f'Fit: D = {fd:.4f} ± {error:.4f}')
+    
+    # Set loglog plot properties
+    ax3.set_title(f'Box Counting (Level {levels[-1]})')
+    ax3.set_xlabel('Box Size (r)')
+    ax3.set_ylabel('Number of Boxes (N)')
+    ax3.legend()
+    ax3.grid(True, which='both', linestyle='--', alpha=0.5)
+    
+    # 4. Dimension error analysis (bottom right)
+    ax4 = fig.add_subplot(2, 2, 4)
+    
+    # Calculate relative error compared to theoretical dimension
+    if theoretical_dimension is not None:
+        rel_errors = [abs(dim - theoretical_dimension) / theoretical_dimension * 100 
+                    for dim in dimensions]
+        ax4.semilogy(levels, rel_errors, 'ro-', markersize=6)
+        
+        # Plot power law fit if enough points
+        if len(levels) >= 3:
+            # Fit a power law: error ~ level^(-alpha)
+            valid_indices = [i for i, e in enumerate(rel_errors) if e > 0]
+            if len(valid_indices) >= 3:
+                valid_levels = [levels[i] for i in valid_indices]
+                valid_errors = [rel_errors[i] for i in valid_indices]
+                log_levels = np.log(valid_levels)
+                log_errors = np.log(valid_errors)
+                poly_results = np.polyfit(log_levels, log_errors, 1, full=False)
+                slope, intercept = poly_results
+                r_value = np.corrcoef(log_levels, log_errors)[0, 1]
+                
+                # Plot the fit line
+                fit_levels = np.linspace(min(levels), max(levels), 100)
+                fit_errors = np.exp(intercept) * fit_levels ** slope
+                ax4.semilogy(fit_levels, fit_errors, 'b--', 
+                           label=f'Fit: error ~ level^({slope:.2f})')
+        
+        ax4.set_title('Error Convergence')
+        ax4.set_xlabel('Iteration Level')
+        ax4.set_ylabel('Relative Error (%)')
+        ax4.grid(True, which='both', linestyle='--', alpha=0.5)
+        ax4.legend()
+    else:
+        # If no theoretical dimension, show error bars
+        ax4.errorbar(levels, dimensions, yerr=errors, fmt='ro-', capsize=4,
+                   label='Dimension with error')
+        ax4.set_title('Dimension with Error Bars')
+        ax4.set_xlabel('Iteration Level')
+        ax4.set_ylabel('Fractal Dimension')
+        ax4.grid(True, linestyle='--', alpha=0.7)
+        ax4.legend()
+    
+    # Set overall title and adjust layout
+    plt.suptitle(f'{fractal_type.capitalize()} Fractal: Iteration Analysis', fontsize=16)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.90)
+    
+    # Save the combined plot
+    combined_filename = os.path.join(output_dir, f"{fractal_type}_iteration_analysis.png")
+    plt.savefig(combined_filename, dpi=300)
+    plt.close()
+    print(f"Saved comprehensive visualization to: {combined_filename}")
+    
+    return combined_filename
+
+def plot_convergence_graph(fractal_type, levels, dimensions, errors, analyzer, output_dir):
+    """Create a detailed convergence graph with fit curve."""
+    plt.figure(figsize=(10, 6))
+    
+    # Plot the dimension vs. iteration level
+    plt.errorbar(levels, dimensions, yerr=errors, fmt='o-', capsize=4,
+               color='blue', alpha=0.7, label='Calculated dimension')
+    
+    # Get theoretical dimension if available
+    theoretical_dimension = analyzer.base.THEORETICAL_DIMENSIONS.get(fractal_type)
+    if theoretical_dimension is not None:
+        plt.axhline(y=theoretical_dimension, color='green', linestyle=':', alpha=0.7,
+                  label=f'Theoretical: {theoretical_dimension:.4f}')
+        
+        # Try to fit a convergence curve
+        # Model: D(n) = D_inf - C/n^alpha
+        if len(levels) >= 4:
+            # Use the difference from theoretical
+            deltas = [theoretical_dimension - d for d in dimensions]
+            
+            # Take log of both sides to linearize
+            log_levels = np.log(levels)
+            log_deltas = np.log([abs(d) for d in deltas])
+            
+            try:
+                # Fit a straight line to the log-log data
+                valid_indices = [i for i, d in enumerate(log_deltas) if not np.isnan(d) and not np.isinf(d)]
+                if len(valid_indices) >= 3:
+                    valid_log_levels = [log_levels[i] for i in valid_indices]
+                    valid_log_deltas = [log_deltas[i] for i in valid_indices]
+                    
+                    slope, intercept, r_value, _, _ = np.polyfit(
+                        valid_log_levels, valid_log_deltas, 1, full=True)[0:3]
+                    
+                    # Convert back to original form
+                    alpha = -slope
+                    C = np.exp(intercept)
+                    
+                    # Create a smooth curve for the fit
+                    fine_levels = np.linspace(min(levels), max(levels) * 1.5, 100)
+                    fit_dimensions = [theoretical_dimension - C * (n ** (-alpha)) for n in fine_levels]
+                    
+                    # Plot the fit
+                    plt.plot(fine_levels, fit_dimensions, 'r--', 
+                           label=f'Fit: D(n) = D∞ - C/n^{alpha:.2f}')
+                    
+                    # Add extrapolation annotation
+                    plt.axvspan(max(levels), max(levels) * 1.5, alpha=0.1, color='gray')
+                    plt.text(max(levels) * 1.2, theoretical_dimension - 0.05, 
+                           'Extrapolation', rotation=0, ha='center', alpha=0.7)
+            except Exception as e:
+                print(f"Could not fit convergence curve: {e}")
+    
+    # Set plot title and labels
+    plt.title(f'Fractal Dimension Convergence - {fractal_type.capitalize()}')
+    plt.xlabel('Iteration Level')
+    plt.ylabel('Fractal Dimension')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.legend()
+    
+    # Add arrows pointing to next potential iterations if theoretical dimension exists
+    if theoretical_dimension is not None and max(levels) < 10:
+        next_level = max(levels) + 1
+        if len(dimensions) >= 2:
+            # Simple linear extrapolation for next iteration
+            next_dim = dimensions[-1] + (dimensions[-1] - dimensions[-2])
+            plt.annotate('', xy=(next_level, next_dim), xytext=(max(levels), dimensions[-1]),
+                       arrowprops=dict(arrowstyle='->', color='purple'))
+
+    plt.xlim(min(levels) - 0.5, max(fine_levels if 'fine_levels' in locals() else levels) + 0.5)
+    y_min = min(dimensions) - max(errors) - 0.05
+    y_max = max(dimensions) + max(errors) + 0.05
+    if 'fit_dimensions' in locals():
+        y_min = min(y_min, min(fit_dimensions))
+        y_max = max(y_max, max(fit_dimensions))
+    if theoretical_dimension is not None:
+        y_min = min(y_min, theoretical_dimension - 0.05)
+        y_max = max(y_max, theoretical_dimension + 0.05)
+    plt.ylim(y_min, y_max)    
+    # Save the plot
+    convergence_filename = os.path.join(output_dir, f"{fractal_type}_dimension_convergence.png")
+    plt.savefig(convergence_filename, dpi=300)
+    plt.close()
+    print(f"Saved convergence plot to: {convergence_filename}")
+    
+    return convergence_filename
+
+def generate_iteration_report(fractal_type, levels, dimensions, errors, r_squared,
+                           analyzer, all_segments, output_dir):
+    """Generate a detailed report of the iteration analysis."""
+    report_file = os.path.join(output_dir, f"{fractal_type}_iteration_analysis_report.txt")
+    theoretical_dimension = analyzer.base.THEORETICAL_DIMENSIONS.get(fractal_type)
+    
+    with open(report_file, 'w') as f:
+        f.write(f"FRACTAL ITERATION ANALYSIS REPORT\n")
+        f.write(f"===============================\n\n")
+        f.write(f"Fractal Type: {fractal_type.capitalize()}\n")
+        f.write(f"Iteration Levels: {min(levels)} to {max(levels)}\n\n")
+        
+        f.write(f"THEORETICAL REFERENCE\n")
+        f.write(f"--------------------\n")
+        if theoretical_dimension is not None:
+            f.write(f"Theoretical Dimension: {theoretical_dimension:.6f}\n\n")
+        else:
+            f.write(f"No theoretical dimension available for this fractal type.\n\n")
+        
+        f.write(f"DETAILED RESULTS BY LEVEL\n")
+        f.write(f"------------------------\n")
+        f.write(f"{'Level':<8} {'Segments':<10} {'Dimension':<12} {'Error':<12} {'R-squared':<12}")
+        if theoretical_dimension is not None:
+            f.write(f" {'Diff from Theo.':<16} {'Rel. Error (%)':<16}\n")
+        else:
+            f.write(f"\n")
+        
+        for i, level in enumerate(levels):
+            segments = all_segments[i]
+            f.write(f"{level:<8} {len(segments):<10} {dimensions[i]:12.6f} {errors[i]:12.6f} {r_squared[i]:12.6f}")
+            if theoretical_dimension is not None:
+                diff = abs(dimensions[i] - theoretical_dimension)
+                rel_err = diff / theoretical_dimension * 100
+                f.write(f" {diff:16.6f} {rel_err:16.4f}\n")
+            else:
+                f.write(f"\n")
+        
+        f.write(f"\nCONVERGENCE ANALYSIS\n")
+        f.write(f"-------------------\n")
+        f.write(f"Final dimension (level {max(levels)}): {dimensions[-1]:.6f} ± {errors[-1]:.6f}\n")
+        
+        if theoretical_dimension is not None:
+            final_diff = abs(dimensions[-1] - theoretical_dimension)
+            final_rel_err = final_diff / theoretical_dimension * 100
+            f.write(f"Difference from theoretical: {final_diff:.6f}\n")
+            f.write(f"Relative error: {final_rel_err:.4f}%\n")
+            f.write(f"Convergence: {100 - final_rel_err:.2f}%\n\n")
+            
+            if len(levels) >= 4:
+                try:
+                    # Calculate convergence rate
+                    # Model: error ~ level^(-alpha)
+                    rel_errors = [abs(dim - theoretical_dimension) / theoretical_dimension * 100 
+                                for dim in dimensions]
+                    valid_indices = [i for i, e in enumerate(rel_errors) if e > 0]
+                    if len(valid_indices) >= 3:
+                        valid_levels = [levels[i] for i in valid_indices]
+                        valid_errors = [rel_errors[i] for i in valid_indices]
+                        log_levels = np.log(valid_levels)
+                        log_errors = np.log(valid_errors)
+                        poly_results = np.polyfit(log_levels, log_errors, 1, full=False)
+                        slope, intercept = poly_results
+                        r_value = np.corrcoef(log_levels, log_errors)[0, 1]  
+                      
+                        f.write(f"CONVERGENCE RATE ANALYSIS\n")
+                        f.write(f"------------------------\n")
+                        f.write(f"Fitted convergence model: error ~ level^({slope:.4f})\n")
+                        f.write(f"Convergence coefficient: {np.exp(intercept):.6f}\n")
+                        f.write(f"R-squared of convergence fit: {r_value**2:.6f}\n\n")
+                        
+                        # Predict further iterations
+                        f.write(f"ITERATION PREDICTIONS\n")
+                        f.write(f"--------------------\n")
+                        f.write(f"Predictions for higher iteration levels:\n")
+                        f.write(f"{'Level':<8} {'Predicted Dimension':<20} {'Predicted Error (%)':<20}\n")
+                        
+                        for level in range(max(levels) + 1, max(levels) + 6):
+                            pred_error = np.exp(intercept) * (level ** slope)
+                            pred_diff = (pred_error / 100) * theoretical_dimension
+                            pred_dim = theoretical_dimension - pred_diff  # Assuming underestimation
+                            f.write(f"{level:<8} {pred_dim:20.6f} {pred_error:20.4f}\n")
+                except Exception as e:
+                    f.write(f"Could not analyze convergence rate: {str(e)}\n")
+        
+        f.write(f"\nGENERATED FILES\n")
+        f.write(f"--------------\n")
+        for filename in os.listdir(output_dir):
+            if filename.endswith(".png"):
+                f.write(f"- {filename}\n")
+    
+    print(f"Generated detailed analysis report: {report_file}")
+    return report_file
+
+if __name__ == "__main__":
+    main()

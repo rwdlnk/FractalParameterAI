@@ -1,0 +1,28 @@
+FRACTAL ANALYSIS REPORT
+======================
+
+Fractal Type: Koch
+Iteration Level: 5
+Segment Count: 1024
+
+BOX COUNTING ANALYSIS
+-------------------
+Fractal Dimension: 1.208592 ± 0.021979
+
+OPTIMAL WINDOW ANALYSIS
+---------------------
+Optimal Dimension: 1.227056
+R-squared Value: 0.997962
+
+THEORETICAL COMPARISON
+---------------------
+Theoretical Dimension: 1.261860
+Difference from Box Counting: 0.053267
+Difference from Optimal Window: 0.034803
+
+GENERATED FILES
+--------------
+- koch_curve_iter5.png
+- koch_dimension_analysis_iter5.png
+- koch_combined_analysis_iter5.png
+- koch_loglog_iter5.png
