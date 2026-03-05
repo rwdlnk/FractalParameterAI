@@ -10,6 +10,176 @@ import glob
 from typing import Tuple, List, Dict, Optional
 from skimage import measure
 
+def _parse_openfoam_points(points_file):
+    """Parse OpenFOAM constant/polyMesh/points → (x_unique_sorted, y_unique_sorted).
+
+    Args:
+        points_file: Path to the points file
+
+    Returns:
+        (x_unique, y_unique): Sorted unique x and y node coordinates as numpy arrays
+    """
+    with open(points_file, 'r') as f:
+        content = f.read()
+
+    # Find the data block: count followed by ( ... )
+    # Skip header, find the integer count before the opening '('
+    lines = content.split('\n')
+    count = None
+    data_start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Skip header/comments
+        if stripped.startswith('/*') or stripped.startswith('\\') or stripped.startswith('//'):
+            continue
+        if stripped.startswith('FoamFile') or stripped == '{' or stripped == '}':
+            continue
+        if stripped.startswith('format') or stripped.startswith('class') or \
+           stripped.startswith('location') or stripped.startswith('object'):
+            continue
+        if stripped == '':
+            continue
+        # First non-header integer is the count
+        if count is None:
+            try:
+                count = int(stripped)
+                continue
+            except ValueError:
+                continue
+        # Next should be '('
+        if stripped == '(':
+            data_start = i + 1
+            break
+
+    if count is None or data_start is None:
+        raise ValueError(f"Could not parse points file: {points_file}")
+
+    # Parse (x y z) tuples
+    x_vals = []
+    y_vals = []
+    for i in range(data_start, len(lines)):
+        line = lines[i].strip()
+        if line == ')':
+            break
+        # Remove parentheses: "(x y z)" → "x y z"
+        line = line.strip('()')
+        parts = line.split()
+        if len(parts) >= 2:
+            x_vals.append(float(parts[0]))
+            y_vals.append(float(parts[1]))
+
+    x_unique = np.unique(x_vals)
+    y_unique = np.unique(y_vals)
+    return x_unique, y_unique
+
+
+def _parse_openfoam_scalar_field(field_file):
+    """Parse an OpenFOAM volScalarField file → numpy array of values.
+
+    Args:
+        field_file: Path to the field file (e.g. alpha.water)
+
+    Returns:
+        np.ndarray of scalar values
+    """
+    with open(field_file, 'r') as f:
+        lines = f.readlines()
+
+    # Find 'internalField' line, then count and ( ... ) block
+    count = None
+    data_start = None
+    for i, line in enumerate(lines):
+        if 'internalField' in line and 'nonuniform' in line:
+            # Count is on the next line (or same line for some formats)
+            # Typically: "internalField   nonuniform List<scalar>"
+            # Then: count
+            # Then: (
+            j = i + 1
+            while j < len(lines):
+                stripped = lines[j].strip()
+                if stripped == '':
+                    j += 1
+                    continue
+                try:
+                    count = int(stripped)
+                    j += 1
+                    break
+                except ValueError:
+                    j += 1
+                    continue
+            # Find opening '('
+            while j < len(lines):
+                if lines[j].strip() == '(':
+                    data_start = j + 1
+                    break
+                j += 1
+            break
+
+    if count is None or data_start is None:
+        raise ValueError(f"Could not parse scalar field: {field_file}")
+
+    # Read values
+    values = []
+    for i in range(data_start, len(lines)):
+        line = lines[i].strip()
+        if line == ')':
+            break
+        if line == '':
+            continue
+        try:
+            values.append(float(line))
+        except ValueError:
+            # Handle multiple values per line
+            for v in line.split():
+                try:
+                    values.append(float(v))
+                except ValueError:
+                    pass
+
+    return np.array(values[:count])
+
+
+def _find_openfoam_time_dir(case_dir, time):
+    """Find the time directory matching a float time value.
+
+    Args:
+        case_dir: Path to OpenFOAM case directory
+        time: Time value (float or str)
+
+    Returns:
+        Path to the matching time directory
+    """
+    time_val = float(time)
+
+    # List all entries in case_dir
+    candidates = []
+    for entry in os.listdir(case_dir):
+        entry_path = os.path.join(case_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        try:
+            t = float(entry)
+            candidates.append((t, entry))
+        except ValueError:
+            continue
+
+    if not candidates:
+        raise ValueError(f"No time directories found in {case_dir}")
+
+    # Find closest match
+    candidates.sort(key=lambda x: abs(x[0] - time_val))
+    best_t, best_name = candidates[0]
+
+    if abs(best_t - time_val) > 1e-6:
+        # Check if it's a reasonable match (within 1% or 0.01)
+        if abs(best_t - time_val) > max(0.01, abs(time_val) * 0.01):
+            raise ValueError(
+                f"No time directory matching t={time_val} in {case_dir}. "
+                f"Closest: {best_name} (t={best_t})")
+
+    return os.path.join(case_dir, best_name)
+
+
 class RTAnalyzer:
     """Complete Rayleigh-Taylor simulation analyzer with fractal dimension calculation."""
 
@@ -126,7 +296,76 @@ class RTAnalyzer:
             'dims': (nx, ny, nz),
             'time': sim_time
         }
-    
+
+    def read_openfoam_field(self, case_dir, time, field_name='alpha.water'):
+        """Read an OpenFOAM 2D field from a case directory.
+
+        Args:
+            case_dir: Path to OpenFOAM case directory (contains constant/, system/, time dirs)
+            time: Time value (float or str) — used to find the time directory
+            field_name: Name of the scalar field file (default: 'alpha.water')
+
+        Returns:
+            dict with keys 'x', 'y', 'f', 'dims', 'time' — same contract as read_vtk_file()
+        """
+        # Parse mesh points to get node coordinates
+        points_file = os.path.join(case_dir, 'constant', 'polyMesh', 'points')
+        x_nodes, y_nodes = _parse_openfoam_points(points_file)
+
+        # Compute cell centers
+        x_cell = 0.5 * (x_nodes[:-1] + x_nodes[1:])
+        y_cell = 0.5 * (y_nodes[:-1] + y_nodes[1:])
+
+        nx = len(x_cell)
+        ny = len(y_cell)
+
+        # Find and parse the field file
+        time_dir = _find_openfoam_time_dir(case_dir, time)
+        field_file = os.path.join(time_dir, field_name)
+
+        if not os.path.isfile(field_file):
+            raise FileNotFoundError(f"Field file not found: {field_file}")
+
+        f_data = _parse_openfoam_scalar_field(field_file)
+
+        # Reshape: OpenFOAM blockMesh structured grids have x varying fastest
+        f_grid = f_data.reshape(ny, nx).T
+
+        # Create meshgrid + transpose (same as VTK cell-data path)
+        x_grid, y_grid = np.meshgrid(x_cell, y_cell)
+        x_grid = x_grid.T
+        y_grid = y_grid.T
+
+        time_val = float(os.path.basename(time_dir))
+
+        return {
+            'x': x_grid,
+            'y': y_grid,
+            'f': f_grid,
+            'dims': (len(x_nodes), len(y_nodes), 2),
+            'time': time_val
+        }
+
+    def read_data(self, path, time=None, field_name='alpha.water'):
+        """Auto-detect format and read simulation data.
+
+        Args:
+            path: Either a .vtk file path OR an OpenFOAM case directory
+            time: Required for OpenFOAM (which timestep to read). Ignored for VTK.
+            field_name: OpenFOAM field name (default: 'alpha.water')
+
+        Returns:
+            dict with 'x', 'y', 'f', 'dims', 'time'
+        """
+        if path.endswith('.vtk'):
+            return self.read_vtk_file(path)
+        elif os.path.isdir(path):
+            if time is None:
+                raise ValueError("time is required for OpenFOAM case directories")
+            return self.read_openfoam_field(path, time, field_name)
+        else:
+            raise ValueError(f"Cannot detect format for: {path}")
+
     def extract_interface(self, f_grid, x_grid, y_grid, level=0.5):
         """Extract the interface contour at level f=0.5 using marching squares algorithm."""
         # Find contours

@@ -14,6 +14,7 @@ Dimensionless variables (Dalziel et al., 1999):
 where A = Atwood number, g = gravity, H = domain height, L = domain width.
 """
 
+import os
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Union
@@ -118,6 +119,21 @@ class RTPhysics:
         return cls(A=A, g=g, H=H, L=L)
 
     @classmethod
+    def from_openfoam_case(cls, case_dir: str, A: float = 0.5,
+                           g: float = 9.81) -> 'RTPhysics':
+        """Auto-detect H and L from an OpenFOAM case directory.
+
+        Reads constant/polyMesh/points to determine domain extents.
+
+        Args:
+            case_dir: Path to OpenFOAM case directory
+            A: Atwood number
+            g: Gravitational acceleration
+        """
+        H, L = _read_domain_from_openfoam(case_dir)
+        return cls(A=A, g=g, H=H, L=L)
+
+    @classmethod
     def from_vtk_file(cls, vtk_path: str, A: float = 0.5,
                       g: float = 9.81) -> 'RTPhysics':
         """Auto-detect H and L from a VTK rectilinear grid file.
@@ -185,4 +201,62 @@ def _read_domain_from_vtk(vtk_path: str):
 
     L = max(x_coords) - min(x_coords)
     H = max(y_coords) - min(y_coords)
+    return H, L
+
+
+def _read_domain_from_openfoam(case_dir: str):
+    """Extract domain H and L from OpenFOAM polyMesh/points.
+
+    Args:
+        case_dir: Path to OpenFOAM case directory
+
+    Returns:
+        (H, L): Domain height and width in meters
+    """
+    points_file = os.path.join(case_dir, 'constant', 'polyMesh', 'points')
+
+    with open(points_file, 'r') as f:
+        content = f.read()
+
+    lines = content.split('\n')
+
+    # Find count and data block
+    count = None
+    data_start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('/*') or stripped.startswith('\\') or \
+           stripped.startswith('//') or stripped.startswith('FoamFile') or \
+           stripped in ('{', '}', '') or \
+           any(stripped.startswith(k) for k in ('format', 'class', 'location', 'object')):
+            continue
+        if count is None:
+            try:
+                count = int(stripped)
+                continue
+            except ValueError:
+                continue
+        if stripped == '(':
+            data_start = i + 1
+            break
+
+    if count is None or data_start is None:
+        raise ValueError(f"Could not parse points file: {points_file}")
+
+    x_vals = []
+    y_vals = []
+    for i in range(data_start, len(lines)):
+        line = lines[i].strip()
+        if line == ')':
+            break
+        parts = line.strip('()').split()
+        if len(parts) >= 2:
+            x_vals.append(float(parts[0]))
+            y_vals.append(float(parts[1]))
+
+    if not x_vals or not y_vals:
+        raise ValueError(f"No point data found in {points_file}")
+
+    L = max(x_vals) - min(x_vals)
+    H = max(y_vals) - min(y_vals)
     return H, L
