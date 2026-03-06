@@ -159,25 +159,40 @@ def get_physics_openfoam(case_dir):
     dy = H / NY
     H0 = H / 2.0  # Default: mid-domain interface
 
-    # Try to parse transportProperties for densities and viscosities
-    rhof, rhofc, nu = 998.0, 998.0, 1.0e-6
-    tp_file = os.path.join(case_dir, 'constant', 'transportProperties')
-    if os.path.isfile(tp_file):
-        with open(tp_file, 'r') as f:
-            content = f.read()
-        # Look for phase densities and viscosities
-        # Format varies but commonly: rho  rho [ ... ] VALUE;
-        for phase, var in [('water', 'rho'), ('air', 'rho')]:
-            m = re.search(rf'{phase}.*?{var}\s+{var}\s*\[.*?\]\s*([\d.eE+-]+)', content, re.DOTALL)
+    # Parse fluid properties - try v13 split files first, then transportProperties
+    rhof, rhofc, nu, nuc = 998.0, 998.0, 1.0e-6, 1.0e-6
+
+    # OpenFOAM v13: physicalProperties.water / physicalProperties.air
+    pp_water = os.path.join(case_dir, 'constant', 'physicalProperties.water')
+    pp_air = os.path.join(case_dir, 'constant', 'physicalProperties.air')
+    if os.path.isfile(pp_water) and os.path.isfile(pp_air):
+        for pp_file, phase in [(pp_water, 'water'), (pp_air, 'air')]:
+            with open(pp_file, 'r') as f:
+                content = f.read()
+            m_rho = re.search(r'rho\s+([\d.eE+-]+)', content)
+            m_nu = re.search(r'nu\s+([\d.eE+-]+)', content)
+            if phase == 'water':
+                if m_rho: rhof = float(m_rho.group(1))
+                if m_nu: nu = float(m_nu.group(1))
+            else:
+                if m_rho: rhofc = float(m_rho.group(1))
+                if m_nu: nuc = float(m_nu.group(1))
+    else:
+        # Fallback: older transportProperties format
+        tp_file = os.path.join(case_dir, 'constant', 'transportProperties')
+        if os.path.isfile(tp_file):
+            with open(tp_file, 'r') as f:
+                content = f.read()
+            for phase, var in [('water', 'rho'), ('air', 'rho')]:
+                m = re.search(rf'{phase}.*?{var}\s+{var}\s*\[.*?\]\s*([\d.eE+-]+)', content, re.DOTALL)
+                if m:
+                    if phase == 'water':
+                        rhof = float(m.group(1))
+                    else:
+                        rhofc = float(m.group(1))
+            m = re.search(r'nu\s+nu\s*\[.*?\]\s*([\d.eE+-]+)', content)
             if m:
-                if phase == 'water':
-                    rhof = float(m.group(1))
-                else:
-                    rhofc = float(m.group(1))
-        # nu
-        m = re.search(r'nu\s+nu\s*\[.*?\]\s*([\d.eE+-]+)', content)
-        if m:
-            nu = float(m.group(1))
+                nu = float(m.group(1))
 
     # Try to parse g
     g = 9.81  # Default
@@ -195,7 +210,7 @@ def get_physics_openfoam(case_dir):
     return {
         'A': A, 'g': g, 'H': H, 'L': L, 'H0': H0,
         'NX': NX, 'NY': NY, 'dx': dx, 'dy': dy,
-        'RHOF': rhof, 'RHOFC': rhofc, 'NU': nu,
+        'RHOF': rhof, 'RHOFC': rhofc, 'NU': nu, 'NUC': nuc,
     }
 
 
@@ -1020,8 +1035,11 @@ Examples:
 
     elif fmt == 'openfoam':
         phys = get_physics_openfoam(case_dir)
-        print(f"\nGrid: {phys['NX']}x{phys['NY']} cells")
+        print(f"\nGrid: {phys['NX']}x{phys['NY']} cells  "
+              f"(dx={phys['dx']*1000:.3f} mm, dy={phys['dy']*1000:.3f} mm)")
         print(f"Domain: L={phys['L']:.4f} m x H={phys['H']:.4f} m")
+        print(f"Heavy fluid: rho={phys['RHOF']:.1f} kg/m3, nu={phys['NU']:.3e} m2/s")
+        print(f"Light fluid: rho={phys['RHOFC']:.1f} kg/m3, nu={phys['NUC']:.3e} m2/s")
         print(f"Atwood: A={phys['A']:.6f}, g={phys['g']:.4f} m/s2\n")
 
         timesteps = find_openfoam_timesteps(case_dir)
@@ -1102,7 +1120,8 @@ Examples:
             print("PHASE 1: Mixing thickness and fractal dimension for all timesteps")
             print("=" * 70)
             df = _run_phase1_openfoam(analyzer, physics, case_dir,
-                                       of_times, analysis_dir, H0)
+                                       of_times, analysis_dir, H0,
+                                       phys_nx=phys['NX'], phys_ny=phys['NY'])
         else:
             csv_path = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
             if os.path.isfile(csv_path):
@@ -1110,7 +1129,8 @@ Examples:
             else:
                 print("WARNING: Phase 1 skipped and no existing results. Running Phase 1.")
                 df = _run_phase1_openfoam(analyzer, physics, case_dir,
-                                           of_times, analysis_dir, H0)
+                                           of_times, analysis_dir, H0,
+                                           phys_nx=phys['NX'], phys_ny=phys['NY'])
 
         if not args.skip_phase2:
             print("\n" + "=" * 70)
@@ -1124,7 +1144,8 @@ Examples:
             print("PHASE 3: Power spectrum and velocity field analysis")
             print("=" * 70)
             _run_phase3_openfoam(analyzer, physics, case_dir,
-                                  of_times, analysis_dir, mf_times, df)
+                                  of_times, analysis_dir, mf_times, df,
+                                  phys_nx=phys['NX'], phys_ny=phys['NY'])
 
     # ─── Final Summary ────────────────────────────────────────────────────
     print("\n" + "=" * 70)
@@ -1142,7 +1163,8 @@ Examples:
 # OpenFOAM Phase Functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0):
+def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0,
+                         phys_nx=None, phys_ny=None):
     """Phase 1 for OpenFOAM cases: process all timesteps."""
     H = physics.H
 
@@ -1222,15 +1244,134 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
     df.to_csv(csv_file, index=False)
     print(f"\nTemporal results saved to {csv_file}")
 
-    # Plots would go here -- for now reuse VTK plotting by generating
-    # snapshot data on the fly (to be expanded when OpenFOAM runs are available)
-    print("Phase 1 complete (OpenFOAM). Plotting deferred until data available.")
+    # Plot Phase 1 results
+    _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_dir, H0,
+                          NX=phys_nx, NY=phys_ny)
 
     return df
 
 
+def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_dir, H0,
+                          NX=None, NY=None):
+    """Generate Phase 1 plots for OpenFOAM cases."""
+    plot_dir = os.path.join(analysis_dir, 'summary')
+    if NX is None or NY is None:
+        # Fallback: read one timestep to get grid dimensions
+        data0 = analyzer.read_openfoam_field(case_dir, of_times[min(1, len(of_times)-1)])
+        NX = data0['x'].shape[0]
+        NY = data0['x'].shape[1]
+    res_label = f'{NX}x{NY}'
+
+    dfv = df[df['time'] > 0.01].copy()
+
+    # --- Mixing thickness ---
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(dfv['tau'], dfv['h_total_geo_nondim'], 'b-', lw=2, label='Geometric')
+    ax.plot(dfv['tau'], dfv['h_total_stat_nondim'], 'r--', lw=2, label='Statistical')
+    ax.set_xlabel(r'$\tau = t\sqrt{Ag/H}$')
+    ax.set_ylabel(r'$h/H$')
+    ax.set_title(f'Mixing Thickness Evolution -- {res_label} OpenFOAM')
+    ax.legend()
+    ax.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, 'mixing_thickness_evolution.png'), dpi=300)
+    plt.close()
+
+    # --- Fractal dimension ---
+    valid_fd = dfv.dropna(subset=['fractal_dim'])
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.errorbar(valid_fd['tau'], valid_fd['fractal_dim'], yerr=valid_fd['fd_error'],
+                 fmt='ro-', capsize=3, ms=4, lw=1.5, label='D')
+    ax1.fill_between(valid_fd['tau'],
+                     valid_fd['fractal_dim'] - valid_fd['fd_error'],
+                     valid_fd['fractal_dim'] + valid_fd['fd_error'],
+                     alpha=0.2, color='gray')
+    ax1.set_xlabel(r'$\tau = t\sqrt{Ag/H}$')
+    ax1.set_ylabel('Fractal dimension D')
+    ax1.set_title(f'Fractal Dimension Evolution -- {res_label} OpenFOAM')
+    ax1.grid(True)
+
+    ax2 = ax1.twinx()
+    ax2.plot(valid_fd['tau'], valid_fd['fd_r_squared'], 'g--', alpha=0.6, label='R2')
+    ax2.set_ylabel('R2', color='g')
+    ax2.set_ylim(0.9, 1.0)
+    ax2.tick_params(axis='y', labelcolor='g')
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='lower right')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, 'fractal_dimension_evolution.png'), dpi=300)
+    plt.close()
+
+    # --- Combined: mixing + fractal dimension ---
+    fig, ax1 = plt.subplots(figsize=(12, 7))
+    ax1.plot(dfv['tau'], dfv['h_total_geo_nondim'], 'b-', lw=2, label='Mixing thickness h/H')
+    ax1.set_xlabel(r'$\tau$', fontsize=14)
+    ax1.set_ylabel(r'$h/H$', color='b', fontsize=14)
+    ax1.tick_params(axis='y', labelcolor='b')
+
+    ax2 = ax1.twinx()
+    ax2.errorbar(valid_fd['tau'], valid_fd['fractal_dim'], yerr=valid_fd['fd_error'],
+                 fmt='ro-', capsize=3, ms=4, label='Fractal dimension D')
+    ax2.set_ylabel('Fractal dimension D', color='r', fontsize=14)
+    ax2.tick_params(axis='y', labelcolor='r')
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+
+    plt.title(f'Mixing Layer Growth and Fractal Dimension -- {res_label} OpenFOAM', fontsize=14)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, 'combined_evolution.png'), dpi=300)
+    plt.close()
+
+    # --- Interface snapshots ---
+    max_time = df['time'].max()
+    snapshot_times = [t for t in [2.0, 5.0, 8.0, 10.0, 14.0, 18.0] if t <= max_time]
+    if not snapshot_times:
+        snapshot_times = np.linspace(df['time'].min(), max_time, 6).tolist()
+
+    n_snap = len(snapshot_times)
+    ncols = min(3, n_snap)
+    nrows = (n_snap + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5*ncols, 5*nrows))
+    if n_snap == 1:
+        axes = [axes]
+    else:
+        axes = np.array(axes).flatten()
+
+    for idx, target_t in enumerate(snapshot_times):
+        closest_t = min(of_times, key=lambda t: abs(t - target_t))
+        data = analyzer.read_openfoam_field(case_dir, closest_t)
+        actual_t = data['time']
+        tau_val = float(physics.nondim_time(actual_t))
+
+        ax = axes[idx]
+        cf = ax.contourf(data['x'], data['y'], data['f'], levels=20, cmap='RdBu_r')
+        contours = analyzer.extract_interface(data['f'], data['x'], data['y'])
+        for c in contours:
+            ax.plot(c[:, 0], c[:, 1], 'k-', lw=0.8)
+        ax.axhline(y=H0, color='gray', ls='--', alpha=0.5)
+        ax.set_title(rf't={actual_t:.2f} s ($\tau$={tau_val:.3f})', fontsize=11)
+        ax.set_xlabel('x (m)')
+        ax.set_ylabel('y (m)')
+        ax.set_aspect('equal')
+
+    for idx in range(n_snap, len(axes)):
+        axes[idx].set_visible(False)
+
+    plt.suptitle(f'RT Interface Evolution -- {res_label} OpenFOAM', fontsize=14, y=1.02)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, 'interface_snapshots.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print("Phase 1 plots complete.")
+
+
 def _run_phase2_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, mf_times, df):
-    """Phase 2 for OpenFOAM cases."""
+    """Phase 2 for OpenFOAM cases: multifractal analysis."""
     mf_output_dir = os.path.join(analysis_dir, 'multifractal')
     os.makedirs(mf_output_dir, exist_ok=True)
 
@@ -1240,26 +1381,347 @@ def _run_phase2_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, mf
         print("WARNING: No multifractal times within data range.")
         return
 
-    # For OpenFOAM, we need to build TIME_FILES differently
-    # The multifractal evolution expects {time: vtk_file} dict
-    # We'll read data directly and call the underlying methods
     print("Phase 2 (OpenFOAM): Multifractal analysis...")
-    # Find closest available times
-    mf_actual = {}
+
+    # Build a {time: data_dict} mapping by reading data for each MF time
+    # Then call the multifractal analysis using the same underlying method
+    q_values = np.arange(-5, 5.1, 0.5)
+
+    mf_results = []
     for target_t in mf_times:
-        closest = min(of_times, key=lambda t: abs(t - target_t))
-        mf_actual[closest] = os.path.join(case_dir, str(closest), 'alpha.water')
-        print(f"  MF target t={target_t:.1f} -> actual t={closest:.3f}")
+        closest_t = min(of_times, key=lambda t: abs(t - target_t))
+        print(f"  MF target t={target_t:.1f} -> actual t={closest_t:.3f}")
 
-    # Use read_openfoam_field for each time, then call multifractal analysis
-    # This requires the analyze_multifractal method to accept data dicts
-    # For now, note that this needs the OpenFOAM data to be present
-    print("  Phase 2 OpenFOAM: deferred until runs are available.")
+        data = analyzer.read_openfoam_field(case_dir, closest_t)
+
+        try:
+            point_dir = os.path.join(mf_output_dir, f"time_{closest_t}")
+            os.makedirs(point_dir, exist_ok=True)
+            mf = analyzer.compute_multifractal_spectrum(data, q_values=q_values,
+                                                         output_dir=point_dir)
+            if mf:
+                mf['time'] = closest_t
+                mf_results.append(mf)
+                print(f"    D0={mf['D0']:.4f}, D1={mf['D1']:.4f}, D2={mf['D2']:.4f}, "
+                      f"alpha_width={mf['alpha_width']:.4f}")
+            else:
+                print(f"    WARNING: No multifractal results returned")
+        except Exception as e:
+            print(f"    ERROR: {e}")
+
+    if mf_results:
+        _plot_phase2(mf_results, physics, df, mf_output_dir)
 
 
-def _run_phase3_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, spec_times, df):
-    """Phase 3 for OpenFOAM cases."""
-    print("Phase 3 (OpenFOAM): deferred until runs are available.")
+def _run_phase3_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, spec_times, df,
+                         phys_nx=None, phys_ny=None):
+    """Phase 3 for OpenFOAM cases: power spectrum + velocity analysis."""
+    from rt_power_spectrum import PowerSpectrumAnalyzer
+    from rt_velocity_statistics import VelocityAnalyzer
+
+    spectra_dir = os.path.join(analysis_dir, 'spectra')
+    velocity_dir = os.path.join(analysis_dir, 'velocity')
+    os.makedirs(spectra_dir, exist_ok=True)
+    os.makedirs(velocity_dir, exist_ok=True)
+
+    psa = PowerSpectrumAnalyzer()
+    va = VelocityAnalyzer()
+
+    max_time = df['time'].max()
+    spec_times = [t for t in spec_times if t <= max_time + 0.5]
+    if not spec_times:
+        print("WARNING: No spectrum times within data range. Skipping Phase 3.")
+        return
+
+    NX = phys_nx or 160
+    NY = phys_ny or 200
+    res_label = f'{NX}x{NY}'
+
+    spec_results_list = []
+    vel_results_list = []
+
+    for target_t in spec_times:
+        closest_t = min(of_times, key=lambda t: abs(t - target_t))
+        data = analyzer.read_openfoam_field(case_dir, closest_t)
+        actual_t = data['time']
+        tau_val = float(physics.nondim_time(actual_t))
+        print(f"\n  t={actual_t:.3f} s (tau={tau_val:.4f})")
+
+        # --- Power spectrum ---
+        spec_result = {'time': actual_t, 'tau': tau_val}
+
+        vof_spec = psa.analyze_2d_field_spectrum(data['f'], data['x'], data['y'],
+                                                  field_name='F', detrend=True)
+        spec_result['vof_spectrum'] = vof_spec
+        print(f"    VOF spectrum: slope={vof_spec['power_law_slope']:.3f}, "
+              f"R2={vof_spec['power_law_r_squared']:.3f}, "
+              f"lambda_dom={vof_spec['dominant_wavelength']:.4f}")
+
+        if 'U' in data and 'V' in data:
+            u_spec = psa.analyze_2d_field_spectrum(data['U'], data['x'], data['y'],
+                                                    field_name='u', detrend=True)
+            v_spec = psa.analyze_2d_field_spectrum(data['V'], data['x'], data['y'],
+                                                    field_name='v', detrend=True)
+            tke_spec = psa.analyze_tke_spectrum(data['U'], data['V'],
+                                                data['x'], data['y'], detrend=True)
+            spec_result['u_velocity_spectrum'] = u_spec
+            spec_result['v_velocity_spectrum'] = v_spec
+            spec_result['tke_spectrum'] = tke_spec
+            print(f"    TKE spectrum: slope={tke_spec['power_law_slope']:.3f}, "
+                  f"R2={tke_spec['power_law_r_squared']:.3f}")
+
+        spec_results_list.append(spec_result)
+
+        # --- Velocity statistics ---
+        if 'U' in data and 'V' in data:
+            vstats = va.analyze_velocity_field(data['U'], data['V'])
+            vel_results_list.append({
+                'time': actual_t, 'tau': tau_val,
+                'u_mean': vstats.u_mean, 'v_mean': vstats.v_mean,
+                'u_rms': vstats.u_rms, 'v_rms': vstats.v_rms,
+                'TKE': vstats.turbulent_kinetic_energy,
+                'reynolds_stress': vstats.reynolds_stress,
+                'turbulence_intensity': vstats.turbulence_intensity,
+                'velocity_mag_max': vstats.velocity_magnitude_max,
+                'velocity_mag_mean': vstats.velocity_magnitude_mean,
+            })
+            print(f"    Velocity: u_rms={vstats.u_rms:.4e}, v_rms={vstats.v_rms:.4e}, "
+                  f"TKE={vstats.turbulent_kinetic_energy:.4e}, "
+                  f"|V|_max={vstats.velocity_magnitude_max:.4e}")
+
+    # Generate Phase 3 plots (reuse _plot_phase3_openfoam)
+    _plot_phase3_openfoam(spec_results_list, vel_results_list, analyzer, physics, psa,
+                          case_dir, of_times, res_label, spectra_dir, velocity_dir)
+
+
+def _plot_phase3_openfoam(spec_results_list, vel_results_list, analyzer, physics, psa,
+                          case_dir, of_times, res_label, spectra_dir, velocity_dir):
+    """Generate Phase 3 plots for OpenFOAM cases."""
+    print("\nGenerating Phase 3 plots...")
+
+    # --- Velocity statistics evolution ---
+    if vel_results_list:
+        vel_df = pd.DataFrame(vel_results_list)
+        vel_df.to_csv(os.path.join(velocity_dir, 'velocity_statistics.csv'), index=False)
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+        ax = axes[0, 0]
+        ax.plot(vel_df['tau'], vel_df['u_rms'], 'bo-', lw=2, ms=5, label=r"$u'_{rms}$")
+        ax.plot(vel_df['tau'], vel_df['v_rms'], 'rs-', lw=2, ms=5, label=r"$v'_{rms}$")
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel('RMS velocity (m/s)')
+        ax.set_title('RMS Velocity Fluctuations')
+        ax.legend()
+        ax.grid(True)
+
+        ax = axes[0, 1]
+        ax.plot(vel_df['tau'], vel_df['TKE'], 'kd-', lw=2, ms=5)
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel('TKE (m$^2$/s$^2$)')
+        ax.set_title('Turbulent Kinetic Energy')
+        ax.grid(True)
+
+        ax = axes[1, 0]
+        ax.plot(vel_df['tau'], vel_df['reynolds_stress'], 'g^-', lw=2, ms=5)
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel(r"$\langle u'v' \rangle$ (m$^2$/s$^2$)")
+        ax.set_title('Reynolds Stress')
+        ax.grid(True)
+
+        ax = axes[1, 1]
+        ax.plot(vel_df['tau'], vel_df['velocity_mag_max'], 'mp-', lw=2, ms=5, label='Max |V|')
+        ax.plot(vel_df['tau'], vel_df['velocity_mag_mean'], 'c+-', lw=2, ms=5, label='Mean |V|')
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel('Velocity magnitude (m/s)')
+        ax.set_title('Velocity Magnitude')
+        ax.legend()
+        ax.grid(True)
+
+        plt.suptitle(f'Velocity Statistics Evolution -- {res_label} OpenFOAM', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(velocity_dir, 'velocity_statistics_evolution.png'), dpi=300)
+        plt.close()
+
+        # --- Velocity field snapshots ---
+        max_time = max(r['time'] for r in vel_results_list)
+        snap_times = [t for t in [2.0, 8.0, 14.0, 18.0] if t <= max_time + 0.5]
+        if not snap_times:
+            snap_times = [vel_results_list[0]['time'], vel_results_list[-1]['time']]
+
+        n_snap = len(snap_times)
+        fig, axes = plt.subplots(2, n_snap, figsize=(5*n_snap, 10))
+        if n_snap == 1:
+            axes = axes.reshape(2, 1)
+
+        for idx, target_t in enumerate(snap_times):
+            closest_t = min(of_times, key=lambda t: abs(t - target_t))
+            data = analyzer.read_openfoam_field(case_dir, closest_t)
+            actual_t = data['time']
+            tau_val = float(physics.nondim_time(actual_t))
+
+            if 'U' not in data or 'V' not in data:
+                continue
+
+            vel_mag = np.sqrt(data['U']**2 + data['V']**2)
+
+            ax = axes[0, idx]
+            cf = ax.contourf(data['x'], data['y'], vel_mag, levels=20, cmap='hot')
+            plt.colorbar(cf, ax=ax, label='|V| (m/s)')
+            ax.set_title(rf't={actual_t:.1f} s ($\tau$={tau_val:.3f})')
+            ax.set_xlabel('x (m)')
+            ax.set_ylabel('y (m)')
+            ax.set_aspect('equal')
+
+            ax = axes[1, idx]
+            dx = data['x'][1, 0] - data['x'][0, 0]
+            dy = data['y'][0, 1] - data['y'][0, 0]
+            dvdx = np.gradient(data['V'], dx, axis=0)
+            dudy = np.gradient(data['U'], dy, axis=1)
+            vorticity = dvdx - dudy
+            vmax = np.percentile(np.abs(vorticity), 98)
+            cf = ax.contourf(data['x'], data['y'], vorticity, levels=20,
+                             cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+            plt.colorbar(cf, ax=ax, label=r'$\omega_z$ (1/s)')
+            ax.set_title(rf'Vorticity t={actual_t:.1f} s')
+            ax.set_xlabel('x (m)')
+            ax.set_ylabel('y (m)')
+            ax.set_aspect('equal')
+
+        plt.suptitle(f'Velocity Field & Vorticity -- {res_label} OpenFOAM', fontsize=14, y=1.02)
+        plt.tight_layout()
+        plt.savefig(os.path.join(velocity_dir, 'velocity_field_snapshots.png'),
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+
+    # --- Power spectrum plots ---
+    if spec_results_list:
+        # Save spectrum summary CSV
+        spec_summary = []
+        for sr in spec_results_list:
+            row = {'time': sr['time'], 'tau': sr['tau']}
+            for key in ['vof_spectrum', 'u_velocity_spectrum', 'v_velocity_spectrum', 'tke_spectrum']:
+                if key in sr:
+                    prefix = key.replace('_spectrum', '')
+                    row[f'{prefix}_slope'] = sr[key]['power_law_slope']
+                    row[f'{prefix}_R2'] = sr[key]['power_law_r_squared']
+                    row[f'{prefix}_dom_wavelength'] = sr[key]['dominant_wavelength']
+                    row[f'{prefix}_total_energy'] = sr[key]['total_energy']
+            spec_summary.append(row)
+        pd.DataFrame(spec_summary).to_csv(
+            os.path.join(spectra_dir, 'spectrum_summary.csv'), index=False)
+
+        # 4-panel spectral evolution
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        taus = [sr['tau'] for sr in spec_results_list]
+
+        ax = axes[0, 0]
+        ax.plot(taus, [sr['vof_spectrum']['power_law_slope'] for sr in spec_results_list],
+                'bo-', lw=2, ms=5, label='VOF (F)')
+        if 'tke_spectrum' in spec_results_list[0]:
+            ax.plot(taus, [sr['tke_spectrum']['power_law_slope'] for sr in spec_results_list],
+                    'rs-', lw=2, ms=5, label='TKE')
+        ax.axhline(-5/3, color='k', ls='--', alpha=0.5, label=r'$k^{-5/3}$')
+        ax.axhline(-3, color='gray', ls=':', alpha=0.5, label=r'$k^{-3}$')
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel('Spectral slope')
+        ax.set_title('Power Law Slope Evolution')
+        ax.legend(fontsize=9)
+        ax.grid(True)
+
+        ax = axes[0, 1]
+        ax.plot(taus, [sr['vof_spectrum']['dominant_wavelength'] for sr in spec_results_list],
+                'go-', lw=2, ms=5, label='VOF (F)')
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel('Dominant wavelength (m)')
+        ax.set_title('Dominant Wavelength Evolution')
+        ax.legend()
+        ax.grid(True)
+
+        ax = axes[1, 0]
+        ax.semilogy(taus, [sr['vof_spectrum']['total_energy'] for sr in spec_results_list],
+                    'bo-', lw=2, ms=5, label='VOF (F)')
+        if 'tke_spectrum' in spec_results_list[0]:
+            ax.semilogy(taus, [sr['tke_spectrum']['total_energy'] for sr in spec_results_list],
+                        'rs-', lw=2, ms=5, label='TKE')
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel('Total spectral energy')
+        ax.set_title('Spectral Energy Evolution')
+        ax.legend()
+        ax.grid(True)
+
+        ax = axes[1, 1]
+        ax.plot(taus, [sr['vof_spectrum']['power_law_r_squared'] for sr in spec_results_list],
+                'bo-', lw=2, ms=5, label='VOF (F)')
+        if 'tke_spectrum' in spec_results_list[0]:
+            ax.plot(taus, [sr['tke_spectrum']['power_law_r_squared'] for sr in spec_results_list],
+                    'rs-', lw=2, ms=5, label='TKE')
+        ax.set_xlabel(r'$\tau$')
+        ax.set_ylabel(r'$R^2$')
+        ax.set_title('Power Law Fit Quality')
+        ax.legend()
+        ax.grid(True)
+
+        plt.suptitle(f'Power Spectrum Evolution -- {res_label} OpenFOAM', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(spectra_dir, 'spectrum_evolution.png'), dpi=300)
+        plt.close()
+
+        # Individual spectrum plots at early, mid, late times
+        indices = [0, len(spec_results_list)//2, -1]
+        for idx in indices:
+            sr = spec_results_list[idx]
+            t = sr['time']
+            tau_val = sr['tau']
+
+            closest_t = min(of_times, key=lambda t_: abs(t_ - t))
+            data = analyzer.read_openfoam_field(case_dir, closest_t)
+
+            field = data['f'] - np.mean(data['f'])
+            nx_f, ny_f = data['f'].shape
+            dx = np.abs(data['x'][1, 0] - data['x'][0, 0])
+            dy = np.abs(data['y'][0, 1] - data['y'][0, 0])
+            fft_2d = np.fft.fft2(field)
+            power_2d = np.abs(fft_2d)**2 / field.size
+            kx = 2 * np.pi * np.fft.fftfreq(nx_f, d=dx)
+            ky = 2 * np.pi * np.fft.fftfreq(ny_f, d=dy)
+            KX, KY = np.meshgrid(kx, ky, indexing='ij')
+            K = np.sqrt(KX**2 + KY**2)
+            wavenumbers, power = psa._radial_average(K, power_2d)
+
+            fig, ax = plt.subplots(figsize=(10, 7))
+            ax.loglog(wavenumbers, power, 'b-', lw=2, alpha=0.8, label='E(k) -- VOF')
+
+            slope = sr['vof_spectrum']['power_law_slope']
+            n_k = len(wavenumbers)
+            k_mid = wavenumbers[n_k//4:3*n_k//4]
+            p_mid = power[n_k//4:3*n_k//4]
+            valid = p_mid > 0
+            if np.sum(valid) > 2:
+                log_k = np.log10(k_mid[valid])
+                log_p = np.log10(p_mid[valid])
+                intercept = np.mean(log_p - slope * log_k)
+                p_fit = 10**(slope * np.log10(k_mid) + intercept)
+                ax.loglog(k_mid, p_fit, 'r--', lw=2,
+                          label=rf'$k^{{{slope:.2f}}}$ '
+                                rf'(R$^2$={sr["vof_spectrum"]["power_law_r_squared"]:.3f})')
+
+            k_ref = wavenumbers[n_k//2]
+            p_ref = power[n_k//2]
+            k_53 = np.logspace(np.log10(k_ref*0.3), np.log10(k_ref*3), 20)
+            ax.loglog(k_53, p_ref * (k_53/k_ref)**(-5/3), 'k:', lw=1.5, alpha=0.5,
+                      label=r'$k^{-5/3}$')
+
+            ax.set_xlabel('Wavenumber k (rad/m)', fontsize=13)
+            ax.set_ylabel('Power Spectral Density', fontsize=13)
+            ax.set_title(rf'Power Spectrum at $\tau$={tau_val:.3f} (t={t:.1f} s)', fontsize=14)
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3, which='both')
+            plt.tight_layout()
+            plt.savefig(os.path.join(spectra_dir, f'spectrum_t{t:.0f}.png'), dpi=300)
+            plt.close()
+
+    print("Phase 3 plots complete.")
 
 
 if __name__ == '__main__':

@@ -139,6 +139,41 @@ def _parse_openfoam_scalar_field(field_file):
     return np.array(values[:count])
 
 
+def _parse_openfoam_vector_field(field_file):
+    """Parse an OpenFOAM volVectorField file -> (Ux, Uy, Uz) numpy arrays.
+
+    Args:
+        field_file: Path to the field file (e.g. U)
+
+    Returns:
+        tuple of (Ux, Uy, Uz) numpy arrays
+    """
+    with open(field_file, 'r') as f:
+        content = f.read()
+
+    match = re.search(
+        r'internalField\s+nonuniform\s+List<vector>\s*\n(\d+)\s*\n\(\s*\n(.*?)\n\)\s*;',
+        content, re.DOTALL)
+
+    if not match:
+        raise ValueError(f"Could not parse vector field: {field_file}")
+
+    count = int(match.group(1))
+    data_str = match.group(2)
+    vectors = re.findall(r'\(([^)]+)\)', data_str)
+
+    ux = np.zeros(count)
+    uy = np.zeros(count)
+    uz = np.zeros(count)
+    for i, vec in enumerate(vectors[:count]):
+        parts = vec.split()
+        ux[i] = float(parts[0])
+        uy[i] = float(parts[1])
+        uz[i] = float(parts[2])
+
+    return ux, uy, uz
+
+
 def _find_openfoam_time_dir(case_dir, time):
     """Find the time directory matching a float time value.
 
@@ -360,13 +395,34 @@ class RTAnalyzer:
 
         time_val = float(os.path.basename(time_dir))
 
-        return {
+        result = {
             'x': x_grid,
             'y': y_grid,
             'f': f_grid,
             'dims': (len(x_nodes), len(y_nodes), 2),
             'time': time_val
         }
+
+        # Try to read velocity field U (vector) -> split into U, V components
+        u_file = os.path.join(time_dir, 'U')
+        if os.path.isfile(u_file):
+            try:
+                ux, uy, uz = _parse_openfoam_vector_field(u_file)
+                result['U'] = ux.reshape(ny, nx).T
+                result['V'] = uy.reshape(ny, nx).T
+            except Exception:
+                pass
+
+        # Try to read pressure field p_rgh
+        p_file = os.path.join(time_dir, 'p_rgh')
+        if os.path.isfile(p_file):
+            try:
+                p_data = _parse_openfoam_scalar_field(p_file)
+                result['P'] = p_data.reshape(ny, nx).T
+            except Exception:
+                pass
+
+        return result
 
     def read_data(self, path, time=None, field_name='alpha.water'):
         """Auto-detect format and read simulation data.
