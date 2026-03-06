@@ -197,7 +197,7 @@ class RTAnalyzer:
 
         # Create fractal analyzer instance
         try:
-            from fractal_analyzer.main import FractalAnalyzer
+            from fractal_analyzer.core.fractal_analyzer import FractalAnalyzer
             self.fractal_analyzer = FractalAnalyzer()
             print("Fractal analyzer initialized successfully")
         except ImportError:
@@ -242,19 +242,26 @@ class RTAnalyzer:
                     j += 1
                 y_coords = np.array(coords_data)
         
-        # Extract scalar field data (F) only
-        f_data = None
-        
+        # Extract all scalar field data (F, P, U, V)
+        scalar_fields = {}
+
         for i, line in enumerate(lines):
-            # Find VOF (F) data
-            if "SCALARS F" in line:
+            if line.strip().startswith("SCALARS "):
+                parts = line.strip().split()
+                field_name = parts[1]
                 data_values = []
                 j = i + 2  # Skip the LOOKUP_TABLE line
                 while j < len(lines) and not lines[j].strip().startswith("SCALARS"):
-                    data_values.extend(list(map(float, lines[j].strip().split())))
+                    vals = lines[j].strip().split()
+                    if vals:
+                        try:
+                            data_values.extend(list(map(float, vals)))
+                        except ValueError:
+                            break
                     j += 1
-                f_data = np.array(data_values)
-                break
+                scalar_fields[field_name] = np.array(data_values)
+
+        f_data = scalar_fields.get('F')
         
         # Check if this is cell-centered data
         is_cell_data = any("CELL_DATA" in line for line in lines)
@@ -288,14 +295,29 @@ class RTAnalyzer:
         time_match = re.search(r'(\d+)\.vtk$', os.path.basename(vtk_file))
         sim_time = float(time_match.group(1))/1000.0 if time_match else 0.0
         
-        # Create output dictionary with only needed fields
-        return {
+        # Reshape additional scalar fields (U, V, P) using same logic as F
+        extra_fields = {}
+        for fname, fdata in scalar_fields.items():
+            if fname == 'F' or fdata is None:
+                continue
+            try:
+                if is_cell_data:
+                    extra_fields[fname] = fdata.reshape(ny_cells, nx_cells).T
+                else:
+                    extra_fields[fname] = fdata.reshape(ny, nx).T
+            except ValueError:
+                pass  # Skip fields that don't match expected size
+
+        # Create output dictionary
+        result = {
             'x': x_grid,
             'y': y_grid,
             'f': f_grid,
             'dims': (nx, ny, nz),
             'time': sim_time
         }
+        result.update(extra_fields)
+        return result
 
     def read_openfoam_field(self, case_dir, time, field_name='alpha.water'):
         """Read an OpenFOAM 2D field from a case directory.
@@ -422,27 +444,36 @@ class RTAnalyzer:
             # Use concentration thresholds to define mixing zone
             f_avg = np.mean(data['f'], axis=0)
             y_values = data['y'][0, :]
-            
+
             epsilon = 0.01  # Threshold for "pure" fluid
-            
-            # Find uppermost position where f drops below 1-epsilon
-            upper_idx = np.where(f_avg < 1 - epsilon)[0]
-            if len(upper_idx) > 0:
-                y_upper = y_values[upper_idx[0]]
+
+            # Detect orientation: if f increases with y, heavy fluid is on top
+            # (RT convention: F=1 is tracked/heavy fluid)
+            f_increases = f_avg[-1] > f_avg[0]
+
+            if f_increases:
+                # F increases with y: heavy on top, light on bottom
+                # Upper boundary: highest y where f < 1-ε (light fluid bubbles)
+                upper_idx = np.where(f_avg < 1 - epsilon)[0]
+                y_upper = y_values[upper_idx[-1]] if len(upper_idx) > 0 else y_values[-1]
+
+                # Lower boundary: lowest y where f > ε (heavy fluid spikes)
+                lower_idx = np.where(f_avg > epsilon)[0]
+                y_lower = y_values[lower_idx[0]] if len(lower_idx) > 0 else y_values[0]
             else:
-                y_upper = y_values[-1]
-            
-            # Find lowermost position where f rises above epsilon
-            lower_idx = np.where(f_avg > epsilon)[0]
-            if len(lower_idx) > 0:
-                y_lower = y_values[lower_idx[-1]]
-            else:
-                y_lower = y_values[0]
-            
+                # F decreases with y: heavy on bottom, light on top
+                # Upper boundary: highest y where f > ε (heavy fluid rising)
+                upper_idx = np.where(f_avg > epsilon)[0]
+                y_upper = y_values[upper_idx[-1]] if len(upper_idx) > 0 else y_values[-1]
+
+                # Lower boundary: lowest y where f < 1-ε (light fluid sinking)
+                lower_idx = np.where(f_avg < 1 - epsilon)[0]
+                y_lower = y_values[lower_idx[0]] if len(lower_idx) > 0 else y_values[0]
+
             # Calculate thicknesses
             ht = max(0, y_upper - h0)
             hb = max(0, h0 - y_lower)
-            
+
             return {'ht': ht, 'hb': hb, 'h_total': ht + hb}
     
     def compute_fractal_dimension(self, data, min_box_size=0.001):
@@ -477,18 +508,22 @@ class RTAnalyzer:
         extent = max(max_x - min_x, max_y - min_y)
         max_box_size = extent / 2
         
-        # Calculate fractal dimension
-        dimension, error, box_sizes, box_counts, bounding_box, intercept = (
-            self.fractal_analyzer.calculate_fractal_dimension(
+        # Perform box counting
+        box_sizes, box_counts, bounding_box = (
+            self.fractal_analyzer.box_counting_unified(
                 segments, min_box_size, max_box_size, box_size_factor=1.5)
         )
-        
+
+        # Calculate fractal dimension from box counting data
+        dimension, error, intercept = self.fractal_analyzer.calculate_fractal_dimension(
+            box_sizes, box_counts)
+
         # Calculate R-squared
         log_sizes = np.log(box_sizes)
         log_counts = np.log(box_counts)
         _, _, r_value, _, _ = stats.linregress(log_sizes, log_counts)
         r_squared = r_value**2
-        
+
         result = {
             'dimension': dimension,
             'error': error,
@@ -905,8 +940,8 @@ class RTAnalyzer:
         
         print(f"Using {num_box_sizes} box sizes for analysis")
         
-        # Use spatial index from BoxCounter to speed up calculations
-        bc = self.fractal_analyzer.box_counter
+        # Use spatial index from FractalAnalyzer
+        fa = self.fractal_analyzer
         
         # Add small margin to bounding box
         margin = extent * 0.01
@@ -921,7 +956,7 @@ class RTAnalyzer:
         
         # Determine grid cell size for spatial index (use smallest box size)
         grid_size = min_box_size * 2
-        segment_grid, grid_width, grid_height = bc.create_spatial_index(
+        segment_grid, grid_width, grid_height = fa.create_spatial_index(
             segments, min_x, min_y, max_x, max_y, grid_size)
         
         print(f"Spatial index created in {time.time() - start_time:.2f} seconds")
@@ -964,7 +999,7 @@ class RTAnalyzer:
                     count = 0
                     for seg_idx in segments_to_check:
                         (x1, y1), (x2, y2) = segments[seg_idx]
-                        if self.fractal_analyzer.base.liang_barsky_line_box_intersection(
+                        if self.fractal_analyzer.liang_barsky_line_box_intersection(
                                 x1, y1, x2, y2, box_xmin, box_ymin, box_xmax, box_ymax):
                             count += 1
                     
@@ -1057,36 +1092,62 @@ class RTAnalyzer:
                 slope, intercept, r_value, p_value, std_err = stats.linregress(log_eps, log_mu)
                 
                 # Store information dimension
-                taus[q1_idx] = -slope  # Convention: τ(1) = -D₁
+                # τ(1) = 0 exactly (since Z(1,ε) = Σp_i = 1 for all ε)
+                # D₁ = lim_{q→1} τ(q)/(q-1) = dτ/dq|_{q=1}
+                # From L'Hôpital: D₁ = -slope of entropy vs log(ε)
+                taus[q1_idx] = 0.0
                 Dqs[q1_idx] = -slope   # Information dimension D₁
                 r_squared[q1_idx] = r_value ** 2
-                
-                print(f"  τ(1) = {taus[q1_idx]:.4f}, D(1) = {Dqs[q1_idx]:.4f}, R² = {r_squared[q1_idx]:.4f}")
+
+                print(f"  τ(1) = 0.0000 (exact), D(1) = {Dqs[q1_idx]:.4f}, R² = {r_squared[q1_idx]:.4f}")
         
-        # Calculate alpha and f(alpha) for multifractal spectrum
-        alpha = np.zeros(len(q_values))
-        f_alpha = np.zeros(len(q_values))
-        
+        # Calculate alpha and f(alpha) via Legendre transform of τ(q)
+        # α = dτ/dq, f(α) = qα - τ(q)
+        alpha = np.full(len(q_values), np.nan)
+        f_alpha = np.full(len(q_values), np.nan)
+
         print("Calculating multifractal spectrum f(α)...")
-        
-        for i, q in enumerate(q_values):
-            if np.isnan(taus[i]):
-                alpha[i] = np.nan
-                f_alpha[i] = np.nan
-                continue
-                
-            # Numerical differentiation for alpha
-            if i > 0 and i < len(q_values) - 1:
-                alpha[i] = -(taus[i+1] - taus[i-1]) / (q_values[i+1] - q_values[i-1])
-            elif i == 0:
-                alpha[i] = -(taus[i+1] - taus[i]) / (q_values[i+1] - q_values[i])
-            else:
-                alpha[i] = -(taus[i] - taus[i-1]) / (q_values[i] - q_values[i-1])
-            
-            # Calculate f(alpha)
-            f_alpha[i] = q * alpha[i] + taus[i]
-            
-            print(f"  q = {q:.1f}, α = {alpha[i]:.4f}, f(α) = {f_alpha[i]:.4f}")
+
+        # Use only valid (non-NaN) τ values for spline fitting
+        valid_mask = ~np.isnan(taus)
+        if np.sum(valid_mask) >= 4:
+            q_valid = q_values[valid_mask]
+            tau_valid = taus[valid_mask]
+
+            # Fit τ(q) with a cubic spline for smooth differentiation
+            from scipy.interpolate import UnivariateSpline
+            try:
+                # Use smoothing spline; s=0 interpolates exactly
+                spline = UnivariateSpline(q_valid, tau_valid, k=3, s=0)
+                tau_smooth = spline(q_valid)
+                dtau_dq = spline.derivative()(q_valid)
+
+                # Compute α and f(α) from the smooth derivative
+                j = 0
+                for i in range(len(q_values)):
+                    if valid_mask[i]:
+                        alpha[i] = dtau_dq[j]
+                        f_alpha[i] = q_values[i] * alpha[i] - taus[i]
+                        j += 1
+
+            except Exception as e:
+                print(f"  Spline fitting failed ({e}), falling back to finite differences")
+                for i in range(len(q_values)):
+                    if not valid_mask[i]:
+                        continue
+                    if i > 0 and i < len(q_values) - 1 and valid_mask[i-1] and valid_mask[i+1]:
+                        alpha[i] = (taus[i+1] - taus[i-1]) / (q_values[i+1] - q_values[i-1])
+                    elif i == 0 and valid_mask[i+1]:
+                        alpha[i] = (taus[i+1] - taus[i]) / (q_values[i+1] - q_values[i])
+                    elif i == len(q_values)-1 and valid_mask[i-1]:
+                        alpha[i] = (taus[i] - taus[i-1]) / (q_values[i] - q_values[i-1])
+                    f_alpha[i] = q_values[i] * alpha[i] - taus[i]
+
+            for i, q in enumerate(q_values):
+                if not np.isnan(alpha[i]):
+                    print(f"  q = {q:.1f}, α = {alpha[i]:.4f}, f(α) = {f_alpha[i]:.4f}")
+        else:
+            print("  Not enough valid τ(q) points for Legendre transform")
         
         # Calculate multifractal parameters
         valid_idx = ~np.isnan(Dqs)
