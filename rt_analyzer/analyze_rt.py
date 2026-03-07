@@ -1220,6 +1220,17 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
         try:
             fd = analyzer.compute_fractal_dimension(data)
             fd_dim, fd_err, fd_r2 = fd['dimension'], fd['error'], fd['r_squared']
+
+            if not np.isnan(fd_dim) and 'box_sizes' in fd:
+                bc_file = os.path.join(analysis_dir, 'fractal',
+                                       f'boxcount_t{time_idx:05d}.csv')
+                bc_df = pd.DataFrame({
+                    'box_size': fd['box_sizes'],
+                    'box_count': fd['box_counts']
+                })
+                if 'box_sizes_nondim' in fd:
+                    bc_df['box_size_nondim'] = fd['box_sizes_nondim']
+                bc_df.to_csv(bc_file, index=False)
         except Exception:
             fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
 
@@ -1264,17 +1275,58 @@ def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_di
 
     dfv = df[df['time'] > 0.01].copy()
 
-    # --- Mixing thickness ---
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(dfv['tau'], dfv['h_total_geo_nondim'], 'b-', lw=2, label='Geometric')
-    ax.plot(dfv['tau'], dfv['h_total_stat_nondim'], 'r--', lw=2, label='Statistical')
-    ax.set_xlabel(r'$\tau = t\sqrt{Ag/H}$')
+    # --- Mixing thickness (dimensional + nondimensional) ---
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    ax1.plot(dfv['time'], dfv['h_total_geo'], 'b-', lw=2, label='Geometric (total)')
+    ax1.plot(dfv['time'], dfv['ht_geo'], 'r--', lw=1.5, label='Geometric (spike)')
+    ax1.plot(dfv['time'], dfv['hb_geo'], 'g--', lw=1.5, label='Geometric (bubble)')
+    ax1.plot(dfv['time'], dfv['h_total_stat'], 'k:', lw=2, label='Statistical (total)')
+    ax1.set_xlabel('Time (s)')
+    ax1.set_ylabel('Mixing thickness (m)')
+    ax1.set_title(f'Mixing Layer Evolution (dimensional) -- {res_label}')
+    ax1.legend(fontsize=9)
+    ax1.grid(True)
+
+    ax2.plot(dfv['tau'], dfv['h_total_geo_nondim'], 'b-', lw=2, label='Geometric (total)')
+    ax2.plot(dfv['tau'], dfv['ht_geo_nondim'], 'r--', lw=1.5, label='Spike')
+    ax2.plot(dfv['tau'], dfv['hb_geo_nondim'], 'g--', lw=1.5, label='Bubble')
+    ax2.set_xlabel(r'$\tau = t\sqrt{Ag/H}$')
+    ax2.set_ylabel(r'$h/H$')
+    ax2.set_title(f'Mixing Layer Evolution (nondimensional) -- {res_label}')
+    ax2.legend(fontsize=9)
+    ax2.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, 'mixing_evolution.png'), dpi=300)
+    plt.close()
+
+    # --- Self-similar scaling: h/H vs tau^2 ---
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(dfv['tau']**2, dfv['h_total_geo_nondim'], 'bo-', ms=4, lw=1.5,
+            label=r'$h/H$ vs $\tau^2$ (geometric)')
+    ax.plot(dfv['tau']**2, dfv['h_total_stat_nondim'], 'rs-', ms=4, lw=1.5,
+            label=r'$h/H$ vs $\tau^2$ (statistical)')
+
+    late = dfv[dfv['tau'] > dfv['tau'].max() * 0.3]
+    if len(late) > 3:
+        coeffs = np.polyfit(late['tau']**2, late['h_total_geo_nondim'], 1)
+        alpha_RT = coeffs[0]
+        tau2_fit = np.linspace(late['tau'].min()**2, late['tau'].max()**2, 50)
+        ax.plot(tau2_fit, np.polyval(coeffs, tau2_fit), 'b--', lw=1,
+                label=rf'$\alpha_{{RT}} \approx {alpha_RT:.4f}$ (geo)')
+        coeffs_s = np.polyfit(late['tau']**2, late['h_total_stat_nondim'], 1)
+        alpha_RT_s = coeffs_s[0]
+        ax.plot(tau2_fit, np.polyval(coeffs_s, tau2_fit), 'r--', lw=1,
+                label=rf'$\alpha_{{RT}} \approx {alpha_RT_s:.4f}$ (stat)')
+
+    ax.set_xlabel(r'$\tau^2$')
     ax.set_ylabel(r'$h/H$')
-    ax.set_title(f'Mixing Thickness Evolution -- {res_label} OpenFOAM')
+    ax.set_title(rf'Self-similar scaling: $h/H = \alpha \tau^2$ -- {res_label} OpenFOAM')
     ax.legend()
     ax.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, 'mixing_thickness_evolution.png'), dpi=300)
+    plt.savefig(os.path.join(plot_dir, 'mixing_self_similar.png'), dpi=300)
     plt.close()
 
     # --- Fractal dimension ---
