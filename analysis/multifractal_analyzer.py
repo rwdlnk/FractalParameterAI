@@ -21,6 +21,18 @@ import time
 import os
 from collections import defaultdict
 
+# GPU acceleration for multifractal box counting
+try:
+    from rt_analyzer.fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
+except ImportError:
+    try:
+        from .fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
+    except ImportError:
+        try:
+            from fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
+        except ImportError:
+            HAS_CUDA = False
+
 class MultifractalAnalyzer:
     """
     Advanced multifractal analysis for interface characterization.
@@ -165,72 +177,77 @@ class MultifractalAnalyzer:
         min_y -= margin
         max_y += margin
         
-        # Create spatial index for segments
-        start_time = time.time()
-        print("Creating spatial index...")
-        
-        grid_size = min_box_size * 2
-        segment_grid, grid_width, grid_height = self.create_spatial_index(
-            segments, min_x, min_y, max_x, max_y, grid_size)
-        
-        print(f"Spatial index created in {time.time() - start_time:.2f} seconds")
-        
         # Initialize data structures for box counting
         all_box_counts = []
         all_probabilities = []
-        
+
+        domain_min = np.array([min_x, min_y], dtype=np.float64)
+        domain_max = np.array([max_x, max_y], dtype=np.float64)
+
+        use_gpu = HAS_CUDA
+        if use_gpu:
+            print("Using GPU-accelerated box counting (CUDA)")
+            seg_arr = _prepare_segments_array(segments)
+        else:
+            print("Using CPU box counting with spatial index")
+            start_time = time.time()
+            grid_size = min_box_size * 2
+            segment_grid, grid_width, grid_height = self.create_spatial_index(
+                segments, min_x, min_y, max_x, max_y, grid_size)
+            print(f"Spatial index created in {time.time() - start_time:.2f} seconds")
+
         # Analyze each box size
         for box_idx, box_size in enumerate(box_sizes):
             box_start_time = time.time()
             print(f"Processing box size {box_idx+1}/{num_box_sizes}: {box_size:.6f}")
-            
-            num_boxes_x = int(np.ceil((max_x - min_x) / box_size))
-            num_boxes_y = int(np.ceil((max_y - min_y) / box_size))
-            
-            # Count segments in each box
-            box_counts = np.zeros((num_boxes_x, num_boxes_y))
-            
-            for i in range(num_boxes_x):
-                for j in range(num_boxes_y):
-                    box_xmin = min_x + i * box_size
-                    box_ymin = min_y + j * box_size
-                    box_xmax = box_xmin + box_size
-                    box_ymax = box_ymin + box_size
-                    
-                    # Find grid cells that might overlap this box
-                    min_cell_x = max(0, int((box_xmin - min_x) / grid_size))
-                    max_cell_x = min(int((box_xmax - min_x) / grid_size) + 1, grid_width)
-                    min_cell_y = max(0, int((box_ymin - min_y) / grid_size))
-                    max_cell_y = min(int((box_ymax - min_y) / grid_size) + 1, grid_height)
-                    
-                    # Get segments that might intersect this box
-                    segments_to_check = set()
-                    for cell_x in range(min_cell_x, max_cell_x):
-                        for cell_y in range(min_cell_y, max_cell_y):
-                            segments_to_check.update(segment_grid.get((cell_x, cell_y), []))
-                    
-                    # Count intersections
-                    count = 0
-                    for seg_idx in segments_to_check:
-                        (x1, y1), (x2, y2) = segments[seg_idx]
-                        if self.liang_barsky_line_box_intersection(
-                                x1, y1, x2, y2, box_xmin, box_ymin, box_xmax, box_ymax):
-                            count += 1
-                    
-                    box_counts[i, j] = count
-            
+
+            if use_gpu:
+                box_counts, num_boxes_x, num_boxes_y = count_segments_per_box_gpu(
+                    seg_arr, box_size, domain_min, domain_max)
+            else:
+                num_boxes_x = int(np.ceil((max_x - min_x) / box_size))
+                num_boxes_y = int(np.ceil((max_y - min_y) / box_size))
+
+                box_counts = np.zeros((num_boxes_x, num_boxes_y))
+
+                for i in range(num_boxes_x):
+                    for j in range(num_boxes_y):
+                        box_xmin = min_x + i * box_size
+                        box_ymin = min_y + j * box_size
+                        box_xmax = box_xmin + box_size
+                        box_ymax = box_ymin + box_size
+
+                        min_cell_x = max(0, int((box_xmin - min_x) / grid_size))
+                        max_cell_x = min(int((box_xmax - min_x) / grid_size) + 1, grid_width)
+                        min_cell_y = max(0, int((box_ymin - min_y) / grid_size))
+                        max_cell_y = min(int((box_ymax - min_y) / grid_size) + 1, grid_height)
+
+                        segments_to_check = set()
+                        for cell_x in range(min_cell_x, max_cell_x):
+                            for cell_y in range(min_cell_y, max_cell_y):
+                                segments_to_check.update(segment_grid.get((cell_x, cell_y), []))
+
+                        count = 0
+                        for seg_idx in segments_to_check:
+                            (x1, y1), (x2, y2) = segments[seg_idx]
+                            if self.liang_barsky_line_box_intersection(
+                                    x1, y1, x2, y2, box_xmin, box_ymin, box_xmax, box_ymax):
+                                count += 1
+
+                        box_counts[i, j] = count
+
             # Keep only non-zero counts and calculate probabilities
-            occupied_boxes = box_counts[box_counts > 0]
+            occupied_boxes = box_counts[box_counts > 0].flatten()
             total_segments = occupied_boxes.sum()
-            
+
             if total_segments > 0:
                 probabilities = occupied_boxes / total_segments
             else:
                 probabilities = np.array([])
-                
+
             all_box_counts.append(occupied_boxes)
             all_probabilities.append(probabilities)
-            
+
             # Report statistics
             box_count = len(occupied_boxes)
             print(f"  Box size: {box_size:.6f}, Occupied boxes: {box_count}, Time: {time.time() - box_start_time:.2f}s")
