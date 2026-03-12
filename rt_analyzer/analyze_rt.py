@@ -253,6 +253,8 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
                 'time': sim_time, 'tau': tau,
                 'ht_geo': 0.0, 'hb_geo': 0.0, 'h_total_geo': 0.0,
                 'ht_stat': 0.0, 'hb_stat': 0.0, 'h_total_stat': 0.0,
+                'ht_int': 0.0, 'hb_int': 0.0, 'h_total_int': 0.0,
+                'h_10': 0.0, 'h_11': H/2.0, 'h_00': H/2.0, 'h_01': 0.0,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_segments': 0
             })
@@ -272,6 +274,15 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
         except Exception as e:
             print(f"  WARNING: statistical mixing failed: {e}")
             mix_stat = {'ht': np.nan, 'hb': np.nan, 'h_total': np.nan}
+
+        # Mixing thickness -- integral method (Dalziel 1999, Eq. 7)
+        try:
+            mix_int = analyzer.compute_mixing_thickness(data, H0, method='integral')
+        except Exception as e:
+            print(f"  WARNING: integral mixing failed: {e}")
+            mix_int = {'ht': np.nan, 'hb': np.nan, 'h_total': np.nan,
+                        'h_10': np.nan, 'h_11': np.nan,
+                        'h_00': np.nan, 'h_01': np.nan}
 
         # Extract interface and save segments
         time_idx = int(re.search(r'-(\d+)\.vtk$', basename).group(1))
@@ -315,6 +326,7 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
             fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
 
         print(f"  h_geo={mix_geo['h_total']:.5f}  h_stat={mix_stat['h_total']:.5f}  "
+              f"h_int={mix_int['h_total']:.5f}  "
               f"D={fd_dim:.4f}+/-{fd_err:.4f}  R2={fd_r2:.4f}  segs={n_segments}")
 
         results.append({
@@ -323,13 +335,22 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
             'h_total_geo': mix_geo['h_total'],
             'ht_stat': mix_stat['ht'], 'hb_stat': mix_stat['hb'],
             'h_total_stat': mix_stat['h_total'],
+            'ht_int': mix_int['ht'], 'hb_int': mix_int['hb'],
+            'h_total_int': mix_int['h_total'],
+            'h_10': mix_int.get('h_10', np.nan),
+            'h_11': mix_int.get('h_11', np.nan),
+            'h_00': mix_int.get('h_00', np.nan),
+            'h_01': mix_int.get('h_01', np.nan),
             'fractal_dim': fd_dim, 'fd_error': fd_err, 'fd_r_squared': fd_r2,
             'n_segments': n_segments
         })
 
     # Build DataFrame with nondimensional quantities
     df = pd.DataFrame(results)
-    for col in ['ht_geo', 'hb_geo', 'h_total_geo', 'ht_stat', 'hb_stat', 'h_total_stat']:
+    for col in ['ht_geo', 'hb_geo', 'h_total_geo',
+                'ht_stat', 'hb_stat', 'h_total_stat',
+                'ht_int', 'hb_int', 'h_total_int',
+                'h_10', 'h_11', 'h_00', 'h_01']:
         df[col + '_nondim'] = df[col] / H
 
     csv_file = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
@@ -356,6 +377,8 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
     ax1.plot(dfv['time'], dfv['ht_geo'], 'r--', lw=1.5, label='Geometric (spike)')
     ax1.plot(dfv['time'], dfv['hb_geo'], 'g--', lw=1.5, label='Geometric (bubble)')
     ax1.plot(dfv['time'], dfv['h_total_stat'], 'k:', lw=2, label='Statistical (total)')
+    if 'h_total_int' in dfv.columns:
+        ax1.plot(dfv['time'], dfv['h_total_int'], 'm-', lw=2, label='Integral (total)')
     ax1.set_xlabel('Time (s)')
     ax1.set_ylabel('Mixing thickness (m)')
     ax1.set_title('Mixing Layer Evolution (dimensional)')
@@ -365,6 +388,8 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
     ax2.plot(dfv['tau'], dfv['h_total_geo_nondim'], 'b-', lw=2, label='Geometric (total)')
     ax2.plot(dfv['tau'], dfv['ht_geo_nondim'], 'r--', lw=1.5, label='Spike')
     ax2.plot(dfv['tau'], dfv['hb_geo_nondim'], 'g--', lw=1.5, label='Bubble')
+    if 'h_total_int_nondim' in dfv.columns:
+        ax2.plot(dfv['tau'], dfv['h_total_int_nondim'], 'm-', lw=2, label='Integral (total)')
     ax2.set_xlabel(r'$\tau = t\sqrt{Ag/H}$')
     ax2.set_ylabel(r'$h/H$')
     ax2.set_title('Mixing Layer Evolution (nondimensional)')
@@ -381,6 +406,9 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
             label=r'$h/H$ vs $\tau^2$ (geometric)')
     ax.plot(dfv['tau']**2, dfv['h_total_stat_nondim'], 'rs-', ms=4, lw=1.5,
             label=r'$h/H$ vs $\tau^2$ (statistical)')
+    if 'h_total_int_nondim' in dfv.columns:
+        ax.plot(dfv['tau']**2, dfv['h_total_int_nondim'], 'm^-', ms=4, lw=1.5,
+                label=r'$h/H$ vs $\tau^2$ (integral)')
 
     late = dfv[dfv['tau'] > dfv['tau'].max() * 0.3]
     if len(late) > 3:
@@ -393,6 +421,11 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
         alpha_RT_s = coeffs_s[0]
         ax.plot(tau2_fit, np.polyval(coeffs_s, tau2_fit), 'r--', lw=1,
                 label=rf'$\alpha_{{RT}} \approx {alpha_RT_s:.4f}$ (stat)')
+        if 'h_total_int_nondim' in late.columns:
+            coeffs_i = np.polyfit(late['tau']**2, late['h_total_int_nondim'], 1)
+            alpha_RT_i = coeffs_i[0]
+            ax.plot(tau2_fit, np.polyval(coeffs_i, tau2_fit), 'm--', lw=1,
+                    label=rf'$\alpha_{{RT}} \approx {alpha_RT_i:.4f}$ (int)')
 
     ax.set_xlabel(r'$\tau^2$')
     ax.set_ylabel(r'$h/H$')
@@ -453,6 +486,67 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, 'combined_evolution.png'), dpi=300)
     plt.close()
+
+    # --- Dalziel integral measures: h_{m,n} ---
+    # Fluid 1 = heavy (F=1), Fluid 0 = light (F=0)
+    # Region 0 = lower, Region 1 = upper
+    # All 4 computed independently; conservation check: h_{m,0}+h_{m,1} should = H/2
+    if 'h_10_nondim' in dfv.columns:
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 11))
+
+        # Top-left: penetration (out-of-place fluid)
+        ax1.plot(dfv['tau'], dfv['h_10_nondim'], 'r-', lw=2,
+                 label=r'$h_{1,0}$: heavy $\downarrow$ into lower')
+        ax1.plot(dfv['tau'], dfv['h_01_nondim'], 'b-', lw=2,
+                 label=r'$h_{0,1}$: light $\uparrow$ into upper')
+        ax1.plot(dfv['tau'], dfv['h_total_int_nondim'], 'k--', lw=2,
+                 label=r'$h_{1,0} + h_{0,1}$ (total)')
+        ax1.set_xlabel(r'$\tau$', fontsize=12)
+        ax1.set_ylabel(r'$h/H$', fontsize=12)
+        ax1.set_title('Penetration Depths (Dalziel Eq. 7)', fontsize=12)
+        ax1.legend(fontsize=9)
+        ax1.grid(True)
+
+        # Top-right: own-region retention
+        ax2.plot(dfv['tau'], dfv['h_11_nondim'], 'r-', lw=2,
+                 label=r'$h_{1,1}$: heavy in own (upper)')
+        ax2.plot(dfv['tau'], dfv['h_00_nondim'], 'b-', lw=2,
+                 label=r'$h_{0,0}$: light in own (lower)')
+        ax2.axhline(0.5, color='gray', ls=':', alpha=0.5, label='H/2')
+        ax2.set_xlabel(r'$\tau$', fontsize=12)
+        ax2.set_ylabel(r'$h/H$', fontsize=12)
+        ax2.set_title('Own-Region Retention', fontsize=12)
+        ax2.legend(fontsize=9)
+        ax2.grid(True)
+
+        # Bottom-left: conservation check — lower half
+        lower_sum = dfv['h_10_nondim'] + dfv['h_00_nondim']
+        ax3.plot(dfv['tau'], lower_sum, 'k-', lw=2,
+                 label=r'$h_{1,0} + h_{0,0}$')
+        ax3.axhline(0.5, color='gray', ls=':', alpha=0.5, label='H/2')
+        ax3.set_xlabel(r'$\tau$', fontsize=12)
+        ax3.set_ylabel(r'$h/H$', fontsize=12)
+        ax3.set_title('Conservation: Lower Half', fontsize=12)
+        ax3.legend(fontsize=9)
+        ax3.grid(True)
+        # Zoom y-axis to show deviations
+        ax3.set_ylim(0.498, 0.502)
+
+        # Bottom-right: conservation check — upper half
+        upper_sum = dfv['h_11_nondim'] + dfv['h_01_nondim']
+        ax4.plot(dfv['tau'], upper_sum, 'k-', lw=2,
+                 label=r'$h_{1,1} + h_{0,1}$')
+        ax4.axhline(0.5, color='gray', ls=':', alpha=0.5, label='H/2')
+        ax4.set_xlabel(r'$\tau$', fontsize=12)
+        ax4.set_ylabel(r'$h/H$', fontsize=12)
+        ax4.set_title('Conservation: Upper Half', fontsize=12)
+        ax4.legend(fontsize=9)
+        ax4.grid(True)
+        ax4.set_ylim(0.498, 0.502)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'dalziel_integral_measures.png'), dpi=300)
+        plt.close()
 
     # --- Interface snapshots ---
     max_time = df['time'].max()
@@ -1184,6 +1278,8 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
                 'time': sim_time, 'tau': tau,
                 'ht_geo': 0.0, 'hb_geo': 0.0, 'h_total_geo': 0.0,
                 'ht_stat': 0.0, 'hb_stat': 0.0, 'h_total_stat': 0.0,
+                'ht_int': 0.0, 'hb_int': 0.0, 'h_total_int': 0.0,
+                'h_10': 0.0, 'h_11': H/2.0, 'h_00': H/2.0, 'h_01': 0.0,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_segments': 0
             })
@@ -1198,6 +1294,13 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             mix_stat = analyzer.compute_mixing_thickness(data, H0, method='statistical')
         except Exception as e:
             mix_stat = {'ht': np.nan, 'hb': np.nan, 'h_total': np.nan}
+
+        try:
+            mix_int = analyzer.compute_mixing_thickness(data, H0, method='integral')
+        except Exception as e:
+            mix_int = {'ht': np.nan, 'hb': np.nan, 'h_total': np.nan,
+                        'h_10': np.nan, 'h_11': np.nan,
+                        'h_00': np.nan, 'h_01': np.nan}
 
         try:
             contours = analyzer.extract_interface(data['f'], data['x'], data['y'])
@@ -1235,6 +1338,7 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
 
         print(f"  h_geo={mix_geo['h_total']:.5f}  h_stat={mix_stat['h_total']:.5f}  "
+              f"h_int={mix_int['h_total']:.5f}  "
               f"D={fd_dim:.4f}+/-{fd_err:.4f}  segs={n_segments}")
 
         results.append({
@@ -1243,12 +1347,21 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             'h_total_geo': mix_geo['h_total'],
             'ht_stat': mix_stat['ht'], 'hb_stat': mix_stat['hb'],
             'h_total_stat': mix_stat['h_total'],
+            'ht_int': mix_int['ht'], 'hb_int': mix_int['hb'],
+            'h_total_int': mix_int['h_total'],
+            'h_10': mix_int.get('h_10', np.nan),
+            'h_11': mix_int.get('h_11', np.nan),
+            'h_00': mix_int.get('h_00', np.nan),
+            'h_01': mix_int.get('h_01', np.nan),
             'fractal_dim': fd_dim, 'fd_error': fd_err, 'fd_r_squared': fd_r2,
             'n_segments': n_segments
         })
 
     df = pd.DataFrame(results)
-    for col in ['ht_geo', 'hb_geo', 'h_total_geo', 'ht_stat', 'hb_stat', 'h_total_stat']:
+    for col in ['ht_geo', 'hb_geo', 'h_total_geo',
+                'ht_stat', 'hb_stat', 'h_total_stat',
+                'ht_int', 'hb_int', 'h_total_int',
+                'h_10', 'h_11', 'h_00', 'h_01']:
         df[col + '_nondim'] = df[col] / H
 
     csv_file = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
@@ -1282,6 +1395,8 @@ def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_di
     ax1.plot(dfv['time'], dfv['ht_geo'], 'r--', lw=1.5, label='Geometric (spike)')
     ax1.plot(dfv['time'], dfv['hb_geo'], 'g--', lw=1.5, label='Geometric (bubble)')
     ax1.plot(dfv['time'], dfv['h_total_stat'], 'k:', lw=2, label='Statistical (total)')
+    if 'h_total_int' in dfv.columns:
+        ax1.plot(dfv['time'], dfv['h_total_int'], 'm-', lw=2, label='Integral (total)')
     ax1.set_xlabel('Time (s)')
     ax1.set_ylabel('Mixing thickness (m)')
     ax1.set_title(f'Mixing Layer Evolution (dimensional) -- {res_label}')
@@ -1291,6 +1406,8 @@ def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_di
     ax2.plot(dfv['tau'], dfv['h_total_geo_nondim'], 'b-', lw=2, label='Geometric (total)')
     ax2.plot(dfv['tau'], dfv['ht_geo_nondim'], 'r--', lw=1.5, label='Spike')
     ax2.plot(dfv['tau'], dfv['hb_geo_nondim'], 'g--', lw=1.5, label='Bubble')
+    if 'h_total_int_nondim' in dfv.columns:
+        ax2.plot(dfv['tau'], dfv['h_total_int_nondim'], 'm-', lw=2, label='Integral (total)')
     ax2.set_xlabel(r'$\tau = t\sqrt{Ag/H}$')
     ax2.set_ylabel(r'$h/H$')
     ax2.set_title(f'Mixing Layer Evolution (nondimensional) -- {res_label}')
@@ -1307,6 +1424,9 @@ def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_di
             label=r'$h/H$ vs $\tau^2$ (geometric)')
     ax.plot(dfv['tau']**2, dfv['h_total_stat_nondim'], 'rs-', ms=4, lw=1.5,
             label=r'$h/H$ vs $\tau^2$ (statistical)')
+    if 'h_total_int_nondim' in dfv.columns:
+        ax.plot(dfv['tau']**2, dfv['h_total_int_nondim'], 'm^-', ms=4, lw=1.5,
+                label=r'$h/H$ vs $\tau^2$ (integral)')
 
     late = dfv[dfv['tau'] > dfv['tau'].max() * 0.3]
     if len(late) > 3:
@@ -1319,6 +1439,11 @@ def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_di
         alpha_RT_s = coeffs_s[0]
         ax.plot(tau2_fit, np.polyval(coeffs_s, tau2_fit), 'r--', lw=1,
                 label=rf'$\alpha_{{RT}} \approx {alpha_RT_s:.4f}$ (stat)')
+        if 'h_total_int_nondim' in late.columns:
+            coeffs_i = np.polyfit(late['tau']**2, late['h_total_int_nondim'], 1)
+            alpha_RT_i = coeffs_i[0]
+            ax.plot(tau2_fit, np.polyval(coeffs_i, tau2_fit), 'm--', lw=1,
+                    label=rf'$\alpha_{{RT}} \approx {alpha_RT_i:.4f}$ (int)')
 
     ax.set_xlabel(r'$\tau^2$')
     ax.set_ylabel(r'$h/H$')

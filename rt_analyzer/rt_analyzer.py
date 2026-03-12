@@ -531,7 +531,73 @@ class RTAnalyzer:
             hb = max(0, h0 - y_lower)
 
             return {'ht': ht, 'hb': hb, 'h_total': ht + hb}
-    
+
+        elif method == 'integral':
+            # Dalziel et al. (1999) Eq. 7: row-average F then integrate
+            # over each half-domain.
+            #
+            # All 4 fluid/region combinations are computed independently
+            # (conservation is NOT imposed — checking h_{m,0}+h_{m,1} = H/2
+            # diagnoses numerical mass conservation in the VOF scheme).
+            #
+            # Fluid 1 = heavy (F=1), Fluid 0 = light (F=0):
+            #   h_{1,0} = int_0^{h0} <F>(y) dy     heavy in lower (penetration)
+            #   h_{1,1} = int_{h0}^{H} <F>(y) dy    heavy in upper (own region)
+            #   h_{0,0} = int_0^{h0} <1-F>(y) dy    light in lower (own region)
+            #   h_{0,1} = int_{h0}^{H} <1-F>(y) dy  light in upper (penetration)
+            #
+            # Conservation checks (should each = H/2 if mass is conserved):
+            #   h_{1,0} + h_{0,0} = H/2   (lower half sums to full region)
+            #   h_{1,1} + h_{0,1} = H/2   (upper half sums to full region)
+            #   h_{1,0} + h_{1,1} = total heavy fluid mass / (rho * L)
+            #   h_{0,0} + h_{0,1} = total light fluid mass / (rho * L)
+            #
+            # Return convention matches geometric/statistical:
+            #   hb = h_{1,0}  (heavy penetrating down)
+            #   ht = h_{0,1}  (light penetrating up)
+            #   h_total = hb + ht
+
+            f_avg = np.mean(data['f'], axis=0)   # <F>(y), shape (ny,)
+            y_values = data['y'][0, :]            # y coordinates
+
+            # Detect orientation
+            f_increases = f_avg[-1] > f_avg[0]
+
+            # Split into lower (y < h0) and upper (y >= h0) regions
+            lower = y_values <= h0
+            upper = y_values >= h0
+
+            y_lo = y_values[lower]
+            y_up = y_values[upper]
+            f_lo = f_avg[lower]
+            f_up = f_avg[upper]
+
+            if f_increases:
+                # F increases with y → heavy fluid on top, F~1 above h0
+                h_10 = float(np.trapz(f_lo, y_lo))         # heavy in lower
+                h_11 = float(np.trapz(f_up, y_up))         # heavy in upper
+                h_00 = float(np.trapz(1.0 - f_lo, y_lo))   # light in lower
+                h_01 = float(np.trapz(1.0 - f_up, y_up))   # light in upper
+            else:
+                # F decreases with y → heavy on bottom, F~1 below h0
+                # "heavy" is the F~1 fluid (bottom), "light" is the F~0 fluid (top)
+                h_10 = float(np.trapz(1.0 - f_lo, y_lo))
+                h_11 = float(np.trapz(1.0 - f_up, y_up))
+                h_00 = float(np.trapz(f_lo, y_lo))
+                h_01 = float(np.trapz(f_up, y_up))
+
+            # Map to ht/hb convention:
+            #   hb = h_{1,0} (heavy going down)
+            #   ht = h_{0,1} (light going up)
+            hb = h_10
+            ht = h_01
+
+            return {
+                'ht': ht, 'hb': hb, 'h_total': ht + hb,
+                'h_10': h_10, 'h_11': h_11,
+                'h_00': h_00, 'h_01': h_01,
+            }
+
     def compute_fractal_dimension(self, data, min_box_size=0.001):
         """Compute fractal dimension of the interface."""
         if self.fractal_analyzer is None:
