@@ -743,9 +743,17 @@ def run_phase2(case_dir, phys, rt_physics, interface_times, analysis_dir,
                 print(f"  WARNING: only {tri_mesh.n_triangles} triangles, skipping")
                 continue
 
+            # Use suggest_parameters() to match Phase 1 scale range
+            features = extract_surface_features(tri_mesh, compute_curvature=False)
+            params = suggest_parameters(features)
+
             result = analyzer.compute_multifractal_spectrum(
                 tri_mesh,
                 q_values=q_values,
+                max_delta=params['initial_delta'],
+                delta_factor=params['delta_factor'],
+                num_scales=params['num_steps'],
+                min_delta=tri_mesh.bbox.characteristic_length / 500,
                 rt_physics=rt_physics,
             )
 
