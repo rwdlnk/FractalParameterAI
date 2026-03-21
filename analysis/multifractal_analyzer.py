@@ -102,14 +102,184 @@ class MultifractalAnalyzer:
         
         return True
         
+    def _get_grid_offsets(self, box_size):
+        """Get adaptive grid offset fractions based on box size (matches FractalAnalyzer)."""
+        if box_size < 0.005:
+            return np.linspace(0, 0.75, 4)  # 4x4 = 16 tests
+        elif box_size < 0.02:
+            return np.linspace(0, 0.5, 3)   # 3x3 = 9 tests
+        else:
+            return np.linspace(0, 0.5, 2)   # 2x2 = 4 tests
+
+    def _count_boxes_per_segment_with_offset_cpu(self, segments, box_size,
+                                                  offset_x, offset_y, max_x, max_y,
+                                                  segment_grid, grid_width, grid_height,
+                                                  cell_size, spatial_min_x, spatial_min_y):
+        """Count segments per box with a specific grid offset (CPU path).
+
+        Returns:
+            (box_counts_2d, num_boxes_x, num_boxes_y)
+        """
+        num_boxes_x = int(np.ceil((max_x - offset_x) / box_size))
+        num_boxes_y = int(np.ceil((max_y - offset_y) / box_size))
+        box_counts = np.zeros((num_boxes_x, num_boxes_y))
+
+        for i in range(num_boxes_x):
+            for j in range(num_boxes_y):
+                box_xmin = offset_x + i * box_size
+                box_ymin = offset_y + j * box_size
+                box_xmax = box_xmin + box_size
+                box_ymax = box_ymin + box_size
+
+                min_cell_x = max(0, int((box_xmin - spatial_min_x) / cell_size))
+                max_cell_x = min(grid_width - 1, int((box_xmax - spatial_min_x) / cell_size))
+                min_cell_y = max(0, int((box_ymin - spatial_min_y) / cell_size))
+                max_cell_y = min(grid_height - 1, int((box_ymax - spatial_min_y) / cell_size))
+
+                segments_to_check = set()
+                for cell_x in range(min_cell_x, max_cell_x + 1):
+                    for cell_y in range(min_cell_y, max_cell_y + 1):
+                        segments_to_check.update(segment_grid.get((cell_x, cell_y), []))
+
+                count = 0
+                for seg_idx in segments_to_check:
+                    (x1, y1), (x2, y2) = segments[seg_idx]
+                    if self.liang_barsky_line_box_intersection(
+                            x1, y1, x2, y2, box_xmin, box_ymin, box_xmax, box_ymax):
+                        count += 1
+
+                box_counts[i, j] = count
+
+        return box_counts, num_boxes_x, num_boxes_y
+
+    def _count_with_grid_optimization(self, segments, box_size,
+                                       min_x, min_y, max_x, max_y,
+                                       use_gpu, seg_arr, domain_max,
+                                       segment_grid, grid_width, grid_height, cell_size):
+        """Count per-box segments with grid optimization — returns distribution for best offset.
+
+        Tests multiple grid offsets and selects the one with minimum occupied box count,
+        matching the validated monofractal approach (Theiler 1990).
+
+        Returns:
+            (best_occupied_boxes, best_n_occupied, grid_tests)
+            where best_occupied_boxes is the 1D array of non-zero per-box segment counts
+        """
+        offset_fractions = self._get_grid_offsets(box_size)
+
+        best_n_occupied = float('inf')
+        best_occupied = None
+        grid_tests = 0
+
+        for dx_frac in offset_fractions:
+            for dy_frac in offset_fractions:
+                grid_tests += 1
+                offset_x = min_x + dx_frac * box_size
+                offset_y = min_y + dy_frac * box_size
+
+                if use_gpu:
+                    d_min = np.array([offset_x, offset_y], dtype=np.float64)
+                    box_counts, nx, ny = count_segments_per_box_gpu(
+                        seg_arr, box_size, d_min, domain_max)
+                else:
+                    box_counts, nx, ny = self._count_boxes_per_segment_with_offset_cpu(
+                        segments, box_size, offset_x, offset_y, max_x, max_y,
+                        segment_grid, grid_width, grid_height, cell_size, min_x, min_y)
+
+                n_occupied = np.count_nonzero(box_counts)
+
+                if n_occupied < best_n_occupied:
+                    best_n_occupied = n_occupied
+                    best_occupied = box_counts[box_counts > 0].flatten().copy()
+
+        return best_occupied if best_occupied is not None else np.array([]), best_n_occupied, grid_tests
+
+    def _enhanced_boundary_removal(self, box_sizes, occupied_counts):
+        """Enhanced boundary artifact detection and removal for scale data.
+
+        Matches FractalAnalyzer.enhanced_boundary_removal() logic.
+        Returns boolean mask of scales to keep.
+
+        Args:
+            box_sizes: array of box sizes
+            occupied_counts: array of occupied box counts (one per box size)
+
+        Returns:
+            mask: boolean array, True for scales to keep
+        """
+        n = len(box_sizes)
+        mask = np.ones(n, dtype=bool)
+
+        if n <= 8:
+            return mask
+
+        log_sizes = np.log(box_sizes)
+        log_counts = np.log(occupied_counts.astype(float))
+
+        segment_size = max(3, n // 4)
+
+        if n < 3 * segment_size:
+            return mask
+
+        try:
+            slope_first, _, r_first, _, _ = stats.linregress(
+                log_sizes[:segment_size], log_counts[:segment_size])
+            slope_middle, _, r_middle, _, _ = stats.linregress(
+                log_sizes[segment_size:3*segment_size], log_counts[segment_size:3*segment_size])
+            slope_last, _, r_last, _, _ = stats.linregress(
+                log_sizes[-segment_size:], log_counts[-segment_size:])
+
+            r2_first = r_first ** 2
+            r2_last = r_last ** 2
+
+            trim_start = 0
+            trim_end = 0
+
+            SLOPE_DEVIATION_THRESHOLD = 0.12
+            MIN_R_SQUARED_THRESHOLD = 0.99
+
+            first_slope_dev = abs(slope_first - slope_middle) / abs(slope_middle) if slope_middle != 0 else 0
+            if first_slope_dev > SLOPE_DEVIATION_THRESHOLD or r2_first < MIN_R_SQUARED_THRESHOLD:
+                trim_start = 1
+                print(f"  Boundary artifact at start: slope deviation {first_slope_dev:.3f}, R² {r2_first:.3f}")
+
+            last_slope_dev = abs(slope_last - slope_middle) / abs(slope_middle) if slope_middle != 0 else 0
+            if last_slope_dev > SLOPE_DEVIATION_THRESHOLD or r2_last < MIN_R_SQUARED_THRESHOLD:
+                trim_end = 1
+                print(f"  Boundary artifact at end: slope deviation {last_slope_dev:.3f}, R² {r2_last:.3f}")
+
+            remaining = n - trim_start - trim_end
+            if remaining >= 4:
+                if trim_start > 0:
+                    mask[:trim_start] = False
+                if trim_end > 0:
+                    mask[-trim_end:] = False
+
+                trimmed_sizes = log_sizes[mask]
+                trimmed_counts = log_counts[mask]
+                _, _, r_new, _, _ = stats.linregress(trimmed_sizes, trimmed_counts)
+                print(f"  R² after boundary removal: {r_new**2:.4f}")
+            else:
+                mask[:] = True  # not enough points, keep all
+
+        except Exception as e:
+            print(f"  Warning: boundary detection failed: {e}")
+
+        return mask
+
     def compute_multifractal_spectrum(self, segments: List[Tuple],
                                     min_box_size: Optional[float] = None,
                                     q_values: Optional[List[float]] = None,
                                     output_dir: Optional[str] = None,
                                     time_value: Optional[float] = None,
-                                    rt_physics=None) -> Dict:
+                                    rt_physics=None,
+                                    box_sizes: Optional[np.ndarray] = None) -> Dict:
         """
         Compute multifractal spectrum from interface segments.
+
+        Uses grid-optimized box counting (multiple grid offsets, take minimum
+        occupied count) to match the validated monofractal approach. Applies
+        enhanced boundary removal before fitting.
 
         Args:
             segments: List of line segments as ((x1,y1), (x2,y2)) tuples
@@ -125,156 +295,154 @@ class MultifractalAnalyzer:
         if not segments:
             print("No interface segments provided. Skipping multifractal analysis.")
             return None
-        
+
         # Set default q values if not provided
         if q_values is None:
             q_values = np.arange(-5, 5.1, 0.5)
         q_values = np.array(q_values)
-        
+
         print(f"Performing multifractal analysis with {len(q_values)} q-values")
         print(f"Using {len(segments)} interface segments")
-        
+
         # Create output directory if specified
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-        
+
         # Calculate extent for max box size
         min_x = min(min(s[0][0], s[1][0]) for s in segments)
         max_x = max(max(s[0][0], s[1][0]) for s in segments)
         min_y = min(min(s[0][1], s[1][1]) for s in segments)
         max_y = max(max(s[0][1], s[1][1]) for s in segments)
-        
+
         extent = max(max_x - min_x, max_y - min_y)
         max_box_size = extent / 2
-        
+
         # Auto-estimate min_box_size if not provided
         if min_box_size is None:
             lengths = [np.sqrt((s[1][0]-s[0][0])**2 + (s[1][1]-s[0][1])**2) for s in segments]
             avg_length = np.mean(lengths)
             min_box_size = avg_length * 2
             print(f"Auto-estimated min_box_size: {min_box_size:.6f}")
-        
-        print(f"Box size range: {min_box_size:.6f} to {max_box_size:.6f}")
-        
-        # Generate box sizes
-        box_sizes = []
-        current_size = max_box_size
-        box_size_factor = 1.5
-        
-        while current_size >= min_box_size:
-            box_sizes.append(current_size)
-            current_size /= box_size_factor
-            
-        box_sizes = np.array(box_sizes)
-        num_box_sizes = len(box_sizes)
-        
+
+        if box_sizes is not None:
+            # Use pre-computed scales (e.g. from Phase 1 monofractal analysis)
+            box_sizes = np.sort(np.asarray(box_sizes, dtype=np.float64))[::-1]
+            num_box_sizes = len(box_sizes)
+            print(f"Using {num_box_sizes} pre-computed box sizes "
+                  f"({box_sizes[0]:.6f} to {box_sizes[-1]:.6f})")
+        else:
+            print(f"Box size range: {min_box_size:.6f} to {max_box_size:.6f}")
+
+            # Generate box sizes
+            box_sizes_list = []
+            current_size = max_box_size
+            box_size_factor = 1.5
+
+            while current_size >= min_box_size:
+                box_sizes_list.append(current_size)
+                current_size /= box_size_factor
+
+            box_sizes = np.array(box_sizes_list)
+            num_box_sizes = len(box_sizes)
+
         print(f"Using {num_box_sizes} box sizes for analysis")
-        
+
         # Add small margin to bounding box
         margin = extent * 0.01
         min_x -= margin
         max_x += margin
         min_y -= margin
         max_y += margin
-        
+
         # Initialize data structures for box counting
         all_box_counts = []
         all_probabilities = []
+        occupied_count_per_scale = []  # for boundary removal
 
         domain_min = np.array([min_x, min_y], dtype=np.float64)
         domain_max = np.array([max_x, max_y], dtype=np.float64)
 
         use_gpu = HAS_CUDA
         if use_gpu:
-            print("Using GPU-accelerated box counting (CUDA)")
+            print("Using GPU-accelerated box counting (CUDA) with grid optimization")
             seg_arr = _prepare_segments_array(segments)
         else:
-            print("Using CPU box counting with spatial index")
+            print("Using CPU box counting with spatial index and grid optimization")
             start_time = time.time()
             grid_size = min_box_size * 2
             segment_grid, grid_width, grid_height = self.create_spatial_index(
                 segments, min_x, min_y, max_x, max_y, grid_size)
             print(f"Spatial index created in {time.time() - start_time:.2f} seconds")
 
-        # Analyze each box size
+        # Analyze each box size with grid optimization
+        print("Box counting with grid optimization:")
+        print("  Box size    |  Min count |  Grid tests | Time (s)")
+        print("  " + "-" * 55)
+
         for box_idx, box_size in enumerate(box_sizes):
             box_start_time = time.time()
-            print(f"Processing box size {box_idx+1}/{num_box_sizes}: {box_size:.6f}")
 
-            if use_gpu:
-                box_counts, num_boxes_x, num_boxes_y = count_segments_per_box_gpu(
-                    seg_arr, box_size, domain_min, domain_max)
+            if not use_gpu:
+                best_occupied, best_n, grid_tests = self._count_with_grid_optimization(
+                    segments, box_size, min_x, min_y, max_x, max_y,
+                    False, None, domain_max,
+                    segment_grid, grid_width, grid_height, grid_size)
             else:
-                num_boxes_x = int(np.ceil((max_x - min_x) / box_size))
-                num_boxes_y = int(np.ceil((max_y - min_y) / box_size))
+                best_occupied, best_n, grid_tests = self._count_with_grid_optimization(
+                    segments, box_size, min_x, min_y, max_x, max_y,
+                    True, seg_arr, domain_max,
+                    None, 0, 0, 0)
 
-                box_counts = np.zeros((num_boxes_x, num_boxes_y))
-
-                for i in range(num_boxes_x):
-                    for j in range(num_boxes_y):
-                        box_xmin = min_x + i * box_size
-                        box_ymin = min_y + j * box_size
-                        box_xmax = box_xmin + box_size
-                        box_ymax = box_ymin + box_size
-
-                        min_cell_x = max(0, int((box_xmin - min_x) / grid_size))
-                        max_cell_x = min(int((box_xmax - min_x) / grid_size) + 1, grid_width)
-                        min_cell_y = max(0, int((box_ymin - min_y) / grid_size))
-                        max_cell_y = min(int((box_ymax - min_y) / grid_size) + 1, grid_height)
-
-                        segments_to_check = set()
-                        for cell_x in range(min_cell_x, max_cell_x):
-                            for cell_y in range(min_cell_y, max_cell_y):
-                                segments_to_check.update(segment_grid.get((cell_x, cell_y), []))
-
-                        count = 0
-                        for seg_idx in segments_to_check:
-                            (x1, y1), (x2, y2) = segments[seg_idx]
-                            if self.liang_barsky_line_box_intersection(
-                                    x1, y1, x2, y2, box_xmin, box_ymin, box_xmax, box_ymax):
-                                count += 1
-
-                        box_counts[i, j] = count
-
-            # Keep only non-zero counts and calculate probabilities
-            occupied_boxes = box_counts[box_counts > 0].flatten()
-            total_segments = occupied_boxes.sum()
-
+            # Calculate probabilities from the best-offset distribution
+            total_segments = best_occupied.sum() if len(best_occupied) > 0 else 0
             if total_segments > 0:
-                probabilities = occupied_boxes / total_segments
+                probabilities = best_occupied / total_segments
             else:
                 probabilities = np.array([])
 
-            all_box_counts.append(occupied_boxes)
+            all_box_counts.append(best_occupied)
             all_probabilities.append(probabilities)
+            occupied_count_per_scale.append(len(best_occupied))
 
-            # Report statistics
-            box_count = len(occupied_boxes)
-            print(f"  Box size: {box_size:.6f}, Occupied boxes: {box_count}, Time: {time.time() - box_start_time:.2f}s")
-        
+            elapsed = time.time() - box_start_time
+            print(f"  {box_size:.6f}  |  {len(best_occupied):8d}  |  {grid_tests:10d}  |  {elapsed:.2f}")
+
+        # No boundary removal — matches Phase 1 monofractal fitting (all scales used).
+        # Boundary removal is available via _enhanced_boundary_removal() if needed.
+        occupied_count_per_scale = np.array(occupied_count_per_scale)
+        scale_mask = np.ones(num_box_sizes, dtype=bool)
+
         # Calculate multifractal properties
         print("Calculating multifractal spectrum...")
         
         taus = np.zeros(len(q_values))
         Dqs = np.zeros(len(q_values))
         r_squared = np.zeros(len(q_values))
-        
+
+        # Use only non-boundary scales for fitting
+        fit_box_sizes = box_sizes[scale_mask]
+        fit_probabilities = [all_probabilities[i] for i in range(num_box_sizes) if scale_mask[i]]
+        num_fit_sizes = len(fit_box_sizes)
+
         for q_idx, q in enumerate(q_values):
             print(f"Processing q = {q:.1f}")
-            
-            # Skip q=1 as it requires special treatment
+
+            # tau(1) = 0 exactly (Z_1 = sum(p_i) = 1 for all scales)
             if abs(q - 1.0) < 1e-6:
+                taus[q_idx] = 0.0
+                r_squared[q_idx] = 1.0
+                print(f"  τ(1) = 0.0000 (exact)")
                 continue
-                
+
             # Calculate partition function for each box size
-            Z_q = np.zeros(num_box_sizes)
-            
-            for i, probabilities in enumerate(all_probabilities):
+            Z_q = np.zeros(num_fit_sizes)
+
+            for i, probabilities in enumerate(fit_probabilities):
                 if len(probabilities) > 0:
                     Z_q[i] = np.sum(probabilities ** q)
                 else:
                     Z_q[i] = np.nan
-            
+
             # Remove NaN values
             valid = ~np.isnan(Z_q)
             if np.sum(valid) < 3:
@@ -283,76 +451,136 @@ class MultifractalAnalyzer:
                 Dqs[q_idx] = np.nan
                 r_squared[q_idx] = np.nan
                 continue
-                
-            log_eps = np.log(box_sizes[valid])
+
+            log_eps = np.log(fit_box_sizes[valid])
             log_Z_q = np.log(Z_q[valid])
-            
+
             # Linear regression to find tau(q)
             slope, intercept, r_value, p_value, std_err = stats.linregress(log_eps, log_Z_q)
-            
-            # Calculate tau(q) and D(q)
+
             taus[q_idx] = slope
-            Dqs[q_idx] = taus[q_idx] / (q - 1) if q != 1 else np.nan
             r_squared[q_idx] = r_value ** 2
-            
-            print(f"  τ({q}) = {taus[q_idx]:.4f}, D({q}) = {Dqs[q_idx]:.4f}, R² = {r_squared[q_idx]:.4f}")
-        
-        # Handle q=1 case (information dimension) separately
-        q1_idx = np.where(np.abs(q_values - 1.0) < 1e-6)[0]
-        if len(q1_idx) > 0:
-            q1_idx = q1_idx[0]
-            print(f"Processing q = 1.0 (information dimension)")
-            
-            # Calculate using L'Hôpital's rule
-            mu_log_mu = np.zeros(num_box_sizes)
-            
-            for i, probabilities in enumerate(all_probabilities):
-                if len(probabilities) > 0:
-                    # Use -sum(p*log(p)) for information dimension
-                    mu_log_mu[i] = -np.sum(probabilities * np.log(probabilities))
+
+            print(f"  τ({q}) = {taus[q_idx]:.4f}, R² = {r_squared[q_idx]:.4f}")
+
+        # Enforce convexity on tau(q) to ensure D_0 >= D_1 >= D_2 (Renyi inequality).
+        # Individual regressions can violate convexity due to fitting noise.
+        # Project tau(q) onto nearest convex function via constrained least-squares.
+        from scipy.optimize import minimize as sp_minimize
+        from scipy.interpolate import UnivariateSpline
+
+        valid_tau = ~np.isnan(taus)
+        n_valid = np.sum(valid_tau)
+
+        if n_valid >= 4:
+            # Enforce convexity only for q >= 0 where partition functions are stable.
+            # Negative-q values are sensitive to near-zero probabilities and often
+            # produce wildly non-convex tau(q); including them collapses the optimizer.
+            mask_pos = (q_values >= -1e-10) & valid_tau
+            q_pos = q_values[mask_pos]
+            tau_pos_raw = taus[mask_pos].copy()
+            n_pos = len(q_pos)
+
+            if n_pos >= 3:
+                q0_pos_idx = np.argmin(np.abs(q_pos - 0.0))
+                has_q0 = abs(q_pos[q0_pos_idx]) < 1e-6
+                q1_pos_idx = np.argmin(np.abs(q_pos - 1.0))
+                has_q1 = abs(q_pos[q1_pos_idx] - 1.0) < 1e-6
+
+                def _objective(tau):
+                    return np.sum((tau - tau_pos_raw) ** 2)
+
+                constraints = []
+                for k in range(n_pos - 2):
+                    dq0 = q_pos[k + 1] - q_pos[k]
+                    dq1 = q_pos[k + 2] - q_pos[k + 1]
+                    def _conv(tau, k=k, dq0=dq0, dq1=dq1):
+                        return (tau[k + 1] - tau[k]) / dq0 - (tau[k + 2] - tau[k + 1]) / dq1
+                    constraints.append({'type': 'ineq', 'fun': _conv})
+
+                # Pin tau(0) to raw value (preserves D0 = Phase 1 box-counting D)
+                if has_q0:
+                    raw_tau0 = float(tau_pos_raw[q0_pos_idx])
+                    constraints.append({'type': 'eq',
+                                        'fun': lambda tau, idx=q0_pos_idx, val=raw_tau0: tau[idx] - val})
+
+                if has_q1:
+                    constraints.append({'type': 'eq',
+                                        'fun': lambda tau, idx=q1_pos_idx: tau[idx]})
+
+                try:
+                    result = sp_minimize(_objective, tau_pos_raw, constraints=constraints,
+                                         method='SLSQP', options={'maxiter': 500, 'ftol': 1e-14})
+                    if result.success:
+                        tau_pos = result.x
+                        adj = np.max(np.abs(tau_pos - tau_pos_raw))
+                        taus[mask_pos] = tau_pos
+                        if adj > 1e-6:
+                            print(f"  Convexity adjustment (q>=0): max |Δτ| = {adj:.6f}")
+                    else:
+                        print(f"  Warning: convexity optimization did not converge, using raw tau")
+                except Exception as e:
+                    print(f"  Warning: convexity enforcement failed ({e}), using raw tau")
+
+            # Compute D_q from convex tau
+            for i, q_val in enumerate(q_values):
+                if np.isnan(taus[i]):
+                    Dqs[i] = np.nan
+                    continue
+                if abs(q_val - 1.0) < 1e-6:
+                    # D_1 = d(tau)/dq at q=1 via central finite difference
+                    if i > 0 and i < len(q_values) - 1:
+                        if not np.isnan(taus[i - 1]) and not np.isnan(taus[i + 1]):
+                            Dqs[i] = (taus[i + 1] - taus[i - 1]) / \
+                                      (q_values[i + 1] - q_values[i - 1])
                 else:
-                    mu_log_mu[i] = np.nan
-            
-            # Remove NaN values
-            valid = ~np.isnan(mu_log_mu)
-            if np.sum(valid) >= 3:
-                log_eps = np.log(box_sizes[valid])
-                log_mu = mu_log_mu[valid]
-                
-                # Linear regression
-                slope, intercept, r_value, p_value, std_err = stats.linregress(log_eps, log_mu)
-                
-                # Store information dimension
-                taus[q1_idx] = -slope  # Convention: τ(1) = -D₁
-                Dqs[q1_idx] = -slope   # Information dimension D₁
-                r_squared[q1_idx] = r_value ** 2
-                
-                print(f"  τ(1) = {taus[q1_idx]:.4f}, D(1) = {Dqs[q1_idx]:.4f}, R² = {r_squared[q1_idx]:.4f}")
-        
-        # Calculate alpha and f(alpha) for multifractal spectrum
-        alpha = np.zeros(len(q_values))
-        f_alpha = np.zeros(len(q_values))
-        
-        print("Calculating multifractal spectrum f(α)...")
-        
-        for i, q in enumerate(q_values):
-            if np.isnan(taus[i]):
-                alpha[i] = np.nan
-                f_alpha[i] = np.nan
-                continue
-                
-            # Numerical differentiation for alpha
-            if i > 0 and i < len(q_values) - 1:
-                alpha[i] = -(taus[i+1] - taus[i-1]) / (q_values[i+1] - q_values[i-1])
-            elif i == 0:
-                alpha[i] = -(taus[i+1] - taus[i]) / (q_values[i+1] - q_values[i])
-            else:
-                alpha[i] = -(taus[i] - taus[i-1]) / (q_values[i] - q_values[i-1])
-            
-            # Calculate f(alpha)
-            f_alpha[i] = q * alpha[i] + taus[i]
-            
-            print(f"  q = {q:.1f}, α = {alpha[i]:.4f}, f(α) = {f_alpha[i]:.4f}")
+                    Dqs[i] = taus[i] / (q_val - 1)
+
+            for i, q_val in enumerate(q_values):
+                if not np.isnan(Dqs[i]):
+                    print(f"  D({q_val:.1f}) = {Dqs[i]:.4f}")
+
+            # Legendre transform for f(alpha) using spline on convex tau
+            alpha = np.full(len(q_values), np.nan)
+            f_alpha = np.full(len(q_values), np.nan)
+
+            print("Calculating multifractal spectrum f(α)...")
+
+            q_valid = q_values[valid_tau]
+            tau_valid = taus[valid_tau]
+            try:
+                spline = UnivariateSpline(q_valid, tau_valid, k=3, s=0)
+                dtau_dq = spline.derivative()(q_valid)
+                j = 0
+                for i in range(len(q_values)):
+                    if valid_tau[i]:
+                        alpha[i] = dtau_dq[j]
+                        f_alpha[i] = q_values[i] * alpha[i] - taus[i]
+                        j += 1
+                        print(f"  q = {q_values[i]:.1f}, α = {alpha[i]:.4f}, f(α) = {f_alpha[i]:.4f}")
+            except Exception:
+                for i, q_val in enumerate(q_values):
+                    if np.isnan(taus[i]):
+                        continue
+                    if i > 0 and i < len(q_values) - 1:
+                        if not np.isnan(taus[i - 1]) and not np.isnan(taus[i + 1]):
+                            alpha[i] = (taus[i + 1] - taus[i - 1]) / \
+                                        (q_values[i + 1] - q_values[i - 1])
+                    elif i == 0 and not np.isnan(taus[i + 1]):
+                        alpha[i] = (taus[i + 1] - taus[i]) / (q_values[i + 1] - q_values[i])
+                    elif i == len(q_values) - 1 and not np.isnan(taus[i - 1]):
+                        alpha[i] = (taus[i] - taus[i - 1]) / (q_values[i] - q_values[i - 1])
+                    if not np.isnan(alpha[i]):
+                        f_alpha[i] = q_val * alpha[i] - taus[i]
+                    print(f"  q = {q_val:.1f}, α = {alpha[i]:.4f}, f(α) = {f_alpha[i]:.4f}")
+        else:
+            alpha = np.full(len(q_values), np.nan)
+            f_alpha = np.full(len(q_values), np.nan)
+            for i, q_val in enumerate(q_values):
+                if np.isnan(taus[i]) or abs(q_val - 1.0) < 1e-6:
+                    Dqs[i] = np.nan
+                    continue
+                Dqs[i] = taus[i] / (q_val - 1)
         
         # Calculate multifractal parameters
         valid_idx = ~np.isnan(Dqs)
@@ -535,8 +763,9 @@ class MultifractalAnalyzer:
         else:
             print(f"  📐 Relatively smooth interface")
 
-    def analyze_multifractal_evolution(self, segments_data: Dict, output_dir: Optional[str] = None, 
-                                     q_values: Optional[List[float]] = None) -> List[Dict]:
+    def analyze_multifractal_evolution(self, segments_data: Dict, output_dir: Optional[str] = None,
+                                     q_values: Optional[List[float]] = None,
+                                     box_sizes_data: Optional[Dict] = None) -> List[Dict]:
         """
         Analyze how multifractal properties evolve over time or across resolutions.
         
@@ -586,8 +815,12 @@ class MultifractalAnalyzer:
                     point_dir = None
                 
                 # Perform multifractal analysis
+                key_boxes = None
+                if box_sizes_data is not None and key in box_sizes_data:
+                    key_boxes = box_sizes_data[key]
                 mf_results = self.compute_multifractal_spectrum(
-                    segments, q_values=q_values, output_dir=point_dir, time_value=key
+                    segments, q_values=q_values, output_dir=point_dir, time_value=key,
+                    box_sizes=key_boxes
                 )
                 
                 if mf_results:

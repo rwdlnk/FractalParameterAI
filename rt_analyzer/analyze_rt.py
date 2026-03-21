@@ -487,6 +487,35 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
     plt.savefig(os.path.join(plot_dir, 'combined_evolution.png'), dpi=300)
     plt.close()
 
+    # --- D(τ) and dh/dτ overlay (bubble merger signature) ---
+    tau_h = dfv['tau'].values
+    h_vals = dfv['h_total_geo_nondim'].values
+    if len(tau_h) > 2:
+        dtau_h = np.diff(tau_h)
+        dh_dtau = np.diff(h_vals) / dtau_h
+        tau_mid = 0.5 * (tau_h[:-1] + tau_h[1:])
+
+        fig, ax1 = plt.subplots(figsize=(12, 7))
+        ax1.errorbar(valid_fd['tau'], valid_fd['fractal_dim'], yerr=valid_fd['fd_error'],
+                     fmt='ko-', capsize=2, ms=3, lw=1, label='Fractal dimension D')
+        ax1.set_xlabel(r'$\tau = t\sqrt{Ag/H}$', fontsize=14)
+        ax1.set_ylabel('Fractal dimension D', fontsize=14)
+
+        ax2 = ax1.twinx()
+        dh_smooth = np.convolve(dh_dtau, np.ones(3)/3, mode='same')
+        ax2.plot(tau_mid, dh_smooth, 'b-', lw=1.5, alpha=0.7, label=r'$d(h/H)/d\tau$ (smoothed)')
+        ax2.set_ylabel(r'$d(h/H)/d\tau$', color='b', fontsize=14)
+        ax2.tick_params(axis='y', labelcolor='b')
+
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+
+        plt.title(r'Fractal Dimension and Mixing Rate $d(h/H)/d\tau$', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'D_and_dh_dtau.png'), dpi=300)
+        plt.close()
+
     # --- Dalziel integral measures: h_{m,n} ---
     # Fluid 1 = heavy (F=1), Fluid 0 = light (F=0)
     # Region 0 = lower, Region 1 = upper
@@ -599,7 +628,7 @@ def _plot_phase1(df, physics, vtk_files, analyzer, H0, plot_dir):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_phase2(analyzer, physics, vtk_files, analysis_dir, mf_times, df):
-    """Run multifractal analysis at selected timesteps."""
+    """Run multifractal analysis at selected timesteps (SOLA-VOF path)."""
     mf_output_dir = os.path.join(analysis_dir, 'multifractal')
     os.makedirs(mf_output_dir, exist_ok=True)
 
@@ -610,22 +639,44 @@ def run_phase2(analyzer, physics, vtk_files, analysis_dir, mf_times, df):
         print("WARNING: No multifractal times within data range. Skipping Phase 2.")
         return
 
-    # Build TIME_FILES dict
-    mf_files = {}
+    q_values = np.arange(-5, 5.1, 0.5)
+    mf_results = []
+
     for target_t in mf_times:
         best_file = min(vtk_files, key=lambda f: abs(vtk_time(f) - target_t))
         actual_t = vtk_time(best_file)
-        mf_files[actual_t] = best_file
-        print(f"  MF target t={target_t:.1f} -> actual t={actual_t:.3f}: "
+        print(f"\n  MF target t={target_t:.1f} -> actual t={actual_t:.3f}: "
               f"{os.path.basename(best_file)}")
 
-    q_values = np.arange(-5, 5.1, 0.5)
+        # Read VTK data
+        data = analyzer.read_vtk_file(best_file)
 
-    mf_results = analyzer.analyze_multifractal_evolution(
-        mf_files,
-        output_dir=mf_output_dir,
-        q_values=q_values
-    )
+        # Load Phase 1 box sizes
+        phase1_boxes = None
+        time_idx = int(re.search(r'-(\d+)\.vtk$', os.path.basename(best_file)).group(1))
+        bc_file = os.path.join(analysis_dir, 'fractal', f'boxcount_t{time_idx:05d}.csv')
+        if os.path.isfile(bc_file):
+            bc_df = pd.read_csv(bc_file)
+            if 'box_size' in bc_df.columns and len(bc_df) >= 3:
+                phase1_boxes = bc_df['box_size'].values
+                print(f"    Using Phase 1 scales ({len(phase1_boxes)} sizes)")
+
+        try:
+            point_dir = os.path.join(mf_output_dir, f"parameter_{actual_t}")
+            os.makedirs(point_dir, exist_ok=True)
+            mf = analyzer.compute_multifractal_spectrum(
+                data, q_values=q_values, output_dir=point_dir,
+                box_sizes=phase1_boxes)
+            if mf:
+                mf['time'] = actual_t
+                mf['parameter'] = actual_t
+                mf_results.append(mf)
+                print(f"    D0={mf['D0']:.4f}, D1={mf['D1']:.4f}, D2={mf['D2']:.4f}, "
+                      f"alpha_width={mf['alpha_width']:.4f}")
+        except Exception as e:
+            print(f"    ERROR: {e}")
+            import traceback
+            traceback.print_exc()
 
     if mf_results:
         _plot_phase2(mf_results, physics, df, mf_output_dir)
@@ -1504,6 +1555,35 @@ def _plot_phase1_openfoam(df, analyzer, physics, case_dir, of_times, analysis_di
     plt.savefig(os.path.join(plot_dir, 'combined_evolution.png'), dpi=300)
     plt.close()
 
+    # --- D(τ) and dh/dτ overlay (bubble merger signature) ---
+    tau_h = dfv['tau'].values
+    h_vals = dfv['h_total_geo_nondim'].values
+    if len(tau_h) > 2:
+        dtau_h = np.diff(tau_h)
+        dh_dtau = np.diff(h_vals) / dtau_h
+        tau_mid = 0.5 * (tau_h[:-1] + tau_h[1:])
+
+        fig, ax1 = plt.subplots(figsize=(12, 7))
+        ax1.errorbar(valid_fd['tau'], valid_fd['fractal_dim'], yerr=valid_fd['fd_error'],
+                     fmt='ko-', capsize=2, ms=3, lw=1, label='Fractal dimension D')
+        ax1.set_xlabel(r'$\tau = t\sqrt{Ag/H}$', fontsize=14)
+        ax1.set_ylabel('Fractal dimension D', fontsize=14)
+
+        ax2 = ax1.twinx()
+        dh_smooth = np.convolve(dh_dtau, np.ones(3)/3, mode='same')
+        ax2.plot(tau_mid, dh_smooth, 'b-', lw=1.5, alpha=0.7, label=r'$d(h/H)/d\tau$ (smoothed)')
+        ax2.set_ylabel(r'$d(h/H)/d\tau$', color='b', fontsize=14)
+        ax2.tick_params(axis='y', labelcolor='b')
+
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+
+        plt.title(f'Fractal Dimension and Mixing Rate -- {res_label} OpenFOAM', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plot_dir, 'D_and_dh_dtau.png'), dpi=300)
+        plt.close()
+
     # --- Interface snapshots ---
     max_time = df['time'].max()
     snapshot_times = [t for t in [2.0, 5.0, 8.0, 10.0, 14.0, 18.0] if t <= max_time]
@@ -1574,8 +1654,20 @@ def _run_phase2_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, mf
         try:
             point_dir = os.path.join(mf_output_dir, f"time_{closest_t}")
             os.makedirs(point_dir, exist_ok=True)
+
+            # Load Phase 1 box sizes for scale consistency
+            bc_time_idx = int(closest_t * 1000)
+            bc_file = os.path.join(analysis_dir, 'fractal',
+                                   f'boxcount_t{bc_time_idx:05d}.csv')
+            phase1_boxes = None
+            if os.path.isfile(bc_file):
+                bc_df = pd.read_csv(bc_file)
+                phase1_boxes = bc_df['box_size'].values
+                print(f"    Using Phase 1 scales ({len(phase1_boxes)} sizes)")
+
             mf = analyzer.compute_multifractal_spectrum(data, q_values=q_values,
-                                                         output_dir=point_dir)
+                                                         output_dir=point_dir,
+                                                         box_sizes=phase1_boxes)
             if mf:
                 mf['time'] = closest_t
                 mf_results.append(mf)

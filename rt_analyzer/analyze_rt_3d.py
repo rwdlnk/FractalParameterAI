@@ -743,19 +743,35 @@ def run_phase2(case_dir, phys, rt_physics, interface_times, analysis_dir,
                 print(f"  WARNING: only {tri_mesh.n_triangles} triangles, skipping")
                 continue
 
-            # Use suggest_parameters() to match Phase 1 scale range
-            features = extract_surface_features(tri_mesh, compute_curvature=False)
-            params = suggest_parameters(features)
+            # Use exact Phase 1 cube sizes so D_q(0) matches box-counting D
+            bc_file = os.path.join(analysis_dir, 'fractal',
+                                   f'boxcount_3d_t{t:.2f}.csv')
+            phase1_cubes = None
+            if os.path.isfile(bc_file):
+                bc_df = pd.read_csv(bc_file)
+                phase1_cubes = bc_df['cube_size'].values
+                print(f"  Using Phase 1 scales ({len(phase1_cubes)} sizes from {bc_file})")
 
-            result = analyzer.compute_multifractal_spectrum(
-                tri_mesh,
-                q_values=q_values,
-                max_delta=params['initial_delta'],
-                delta_factor=params['delta_factor'],
-                num_scales=params['num_steps'],
-                min_delta=tri_mesh.bbox.characteristic_length / 500,
-                rt_physics=rt_physics,
-            )
+            if phase1_cubes is not None:
+                result = analyzer.compute_multifractal_spectrum(
+                    tri_mesh,
+                    q_values=q_values,
+                    cube_sizes=phase1_cubes,
+                    rt_physics=rt_physics,
+                )
+            else:
+                # Fallback: regenerate scales via suggest_parameters()
+                features = extract_surface_features(tri_mesh, compute_curvature=False)
+                params = suggest_parameters(features)
+                result = analyzer.compute_multifractal_spectrum(
+                    tri_mesh,
+                    q_values=q_values,
+                    max_delta=params['initial_delta'],
+                    delta_factor=params['delta_factor'],
+                    num_scales=params['num_steps'],
+                    min_delta=tri_mesh.bbox.characteristic_length / 500,
+                    rt_physics=rt_physics,
+                )
 
             # Save per-timestep results
             label = f't{t:.2f}_'
