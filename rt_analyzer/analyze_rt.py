@@ -236,6 +236,19 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
     for subdir in ['interfaces', 'fractal', 'summary']:
         os.makedirs(os.path.join(analysis_dir, subdir), exist_ok=True)
 
+    # Fixed domain-based scales: max_box = L/2, min_box = 2*dx, factor = 1.5.
+    # Using domain geometry ensures the same scale range at every timestep,
+    # eliminating early-time D spikes from adaptive parameter jumps.
+    first_data = analyzer.read_vtk_file(vtk_files[0])
+    x1d = first_data['x'][:, 0] if first_data['x'].ndim == 2 else first_data['x']
+    domain_L = float(x1d[-1] - x1d[0])
+    dx = float(x1d[1] - x1d[0])
+    fixed_max_box = domain_L / 2
+    fixed_min_box = dx * 2
+    fixed_factor = 1.5
+    print(f"  Fixed scales: max={fixed_max_box:.6f}, min={fixed_min_box:.6f}, "
+          f"factor={fixed_factor}")
+
     results = []
 
     for i, vtk_file in enumerate(vtk_files):
@@ -304,9 +317,11 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
             print(f"  WARNING: interface extraction failed: {e}")
             n_segments = 0
 
-        # Fractal dimension
+        # Fractal dimension (fixed domain-based scales)
         try:
-            fd = analyzer.compute_fractal_dimension(data)
+            fd = analyzer.compute_fractal_dimension(
+                data, min_box_size=fixed_min_box,
+                max_box_size=fixed_max_box, box_size_factor=fixed_factor)
             fd_dim = fd['dimension']
             fd_err = fd['error']
             fd_r2 = fd['r_squared']
@@ -1316,6 +1331,17 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
     for subdir in ['interfaces', 'fractal', 'summary']:
         os.makedirs(os.path.join(analysis_dir, subdir), exist_ok=True)
 
+    # Fixed domain-based scales
+    first_data = analyzer.read_openfoam_field(case_dir, of_times[0])
+    x1d = first_data['x'][:, 0] if first_data['x'].ndim == 2 else first_data['x']
+    domain_L = float(x1d[-1] - x1d[0])
+    dx = float(x1d[1] - x1d[0])
+    fixed_max_box = domain_L / 2
+    fixed_min_box = dx * 2
+    fixed_factor = 1.5
+    print(f"  Fixed scales: max={fixed_max_box:.6f}, min={fixed_min_box:.6f}, "
+          f"factor={fixed_factor}")
+
     results = []
 
     for i, sim_time in enumerate(of_times):
@@ -1372,7 +1398,9 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             n_segments = 0
 
         try:
-            fd = analyzer.compute_fractal_dimension(data)
+            fd = analyzer.compute_fractal_dimension(
+                data, min_box_size=fixed_min_box,
+                max_box_size=fixed_max_box, box_size_factor=fixed_factor)
             fd_dim, fd_err, fd_r2 = fd['dimension'], fd['error'], fd['r_squared']
 
             if not np.isnan(fd_dim) and 'box_sizes' in fd:

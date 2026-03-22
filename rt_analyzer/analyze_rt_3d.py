@@ -485,16 +485,17 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
             surf_area = tri_mesh.surface_area
 
             if n_tri >= 10:
-                # Use adaptive parameters from surface features
-                features = extract_surface_features(tri_mesh, compute_curvature=False)
-                params = suggest_parameters(features)
-
+                # Fixed domain-based scales for temporal consistency.
+                # max_delta = min(L,W)/2, min_delta = 2*dx, factor = 1.5.
+                domain_char = min(phys['L'], phys['W'])
+                fixed_initial = domain_char / 2
+                fixed_min = max(mesh.dx, mesh.dy, mesh.dz) * 2
                 fd_result = compute_fractal_dimension_3d(
                     tri_mesh,
-                    initial_delta=params['initial_delta'],
-                    delta_factor=params['delta_factor'],
-                    num_steps=params['num_steps'],
-                    min_delta=tri_mesh.bbox.characteristic_length / 500,
+                    initial_delta=fixed_initial,
+                    delta_factor=1.5,
+                    num_steps=20,
+                    min_delta=fixed_min,
                 )
                 fd_dim = fd_result.dimension
                 fd_err = fd_result.std_error

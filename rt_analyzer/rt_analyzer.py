@@ -607,7 +607,8 @@ class RTAnalyzer:
                 'h_00': h_00, 'h_01': h_01,
             }
 
-    def compute_fractal_dimension(self, data, min_box_size=0.001):
+    def compute_fractal_dimension(self, data, min_box_size=0.001,
+                                   max_box_size=None, box_size_factor=1.5):
         """Compute fractal dimension of the interface."""
         if self.fractal_analyzer is None:
             print("Fractal analyzer not available. Skipping fractal dimension calculation.")
@@ -636,13 +637,14 @@ class RTAnalyzer:
         min_y = min(min(s[0][1], s[1][1]) for s in segments)
         max_y = max(max(s[0][1], s[1][1]) for s in segments)
         
-        extent = max(max_x - min_x, max_y - min_y)
-        max_box_size = extent / 2
-        
+        if max_box_size is None:
+            extent = max(max_x - min_x, max_y - min_y)
+            max_box_size = extent / 2
+
         # Perform box counting
         box_sizes, box_counts, bounding_box = (
             self.fractal_analyzer.box_counting_unified(
-                segments, min_box_size, max_box_size, box_size_factor=1.5)
+                segments, min_box_size, max_box_size, box_size_factor=box_size_factor)
         )
 
         # Calculate fractal dimension from box counting data
