@@ -647,22 +647,82 @@ class RTAnalyzer:
                 segments, min_box_size, max_box_size, box_size_factor=box_size_factor)
         )
 
-        # Calculate fractal dimension from box counting data
-        dimension, error, intercept = self.fractal_analyzer.calculate_fractal_dimension(
-            box_sizes, box_counts)
+        box_sizes = np.array(box_sizes, dtype=np.float64)
+        box_counts = np.array(box_counts, dtype=np.float64)
 
-        # Calculate R-squared
+        # Enhanced boundary removal: detect and trim scales where the
+        # log-log slope deviates significantly from the middle region
+        if len(box_sizes) > 8:
+            log_s = np.log(box_sizes)
+            log_c = np.log(box_counts)
+            n = len(log_s)
+            seg_size = max(3, n // 4)
+            if n >= 3 * seg_size:
+                try:
+                    sl_first, _, r2_first, _, _ = stats.linregress(log_s[:seg_size], log_c[:seg_size])
+                    sl_mid, _, r2_mid, _, _ = stats.linregress(log_s[seg_size:2*seg_size], log_c[seg_size:2*seg_size])
+                    sl_last, _, r2_last, _, _ = stats.linregress(log_s[-seg_size:], log_c[-seg_size:])
+                    trim_start, trim_end = 0, 0
+                    if sl_mid != 0:
+                        if abs(sl_first - sl_mid) / abs(sl_mid) > 0.15 or r2_first < 0.95:
+                            trim_start = 1
+                        if abs(sl_last - sl_mid) / abs(sl_mid) > 0.15 or r2_last < 0.95:
+                            trim_end = 1
+                    if (trim_start or trim_end) and n > (trim_start + trim_end) + 5:
+                        box_sizes = box_sizes[trim_start:n - trim_end if trim_end else n]
+                        box_counts = box_counts[trim_start:n - trim_end if trim_end else n]
+                except Exception:
+                    pass
+
+        # Find optimal scaling region: sliding window, select best R² × range
         log_sizes = np.log(box_sizes)
         log_counts = np.log(box_counts)
-        _, _, r_value, _, _ = stats.linregress(log_sizes, log_counts)
-        r_squared = r_value**2
+        best_score = -1.0
+        best_dim, best_err, best_r2 = np.nan, np.nan, 0.0
+        best_start, best_end = 0, len(log_sizes)
+        min_pts = min(5, len(log_sizes))
+
+        for n_pts in range(min_pts, len(log_sizes) + 1):
+            for start in range(len(log_sizes) - n_pts + 1):
+                end = start + n_pts
+                x = log_sizes[start:end]
+                y = log_counts[start:end]
+                sl, _, rv, _, se = stats.linregress(x, y)
+                r2 = rv ** 2
+                scaling_range = abs(x[-1] - x[0])
+                if r2 >= 0.97 and scaling_range >= 1.0:
+                    score = r2 * scaling_range
+                    if score > best_score:
+                        best_score = score
+                        best_dim = -sl
+                        best_err = se
+                        best_r2 = r2
+                        best_start = start
+                        best_end = end
+
+        if np.isnan(best_dim):
+            # Fallback: use all data
+            sl, _, rv, _, se = stats.linregress(log_sizes, log_counts)
+            best_dim = -sl
+            best_err = se
+            best_r2 = rv ** 2
+            best_start = 0
+            best_end = len(log_sizes)
+
+        dimension = best_dim
+        error = best_err
+        r_squared = best_r2
+
+        # Store the scales used for the best fit
+        fit_sizes = box_sizes[best_start:best_end]
+        fit_counts = box_counts[best_start:best_end]
 
         result = {
             'dimension': dimension,
             'error': error,
             'r_squared': r_squared,
-            'box_sizes': box_sizes,
-            'box_counts': box_counts,
+            'box_sizes': fit_sizes.tolist(),
+            'box_counts': fit_counts.tolist(),
             'bounding_box': bounding_box,
             'segments': segments
         }
