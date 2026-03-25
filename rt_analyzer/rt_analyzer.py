@@ -12,10 +12,10 @@ from skimage import measure
 
 # GPU acceleration for multifractal box counting
 try:
-    from .fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
+    from .fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, box_counting_gpu, _prepare_segments_array
 except ImportError:
     try:
-        from fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
+        from fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, box_counting_gpu, _prepare_segments_array
     except ImportError:
         HAS_CUDA = False
 
@@ -641,7 +641,9 @@ class RTAnalyzer:
             extent = max(max_x - min_x, max_y - min_y)
             max_box_size = extent / 2
 
-        # Perform box counting
+        # Perform box counting via CPU FractalAnalyzer with grid optimization
+        # (GPU acceleration available for Phase 2 multifractal; Phase 1 uses
+        # validated CPU path with boundary removal + optimal scaling)
         box_sizes, box_counts, bounding_box = (
             self.fractal_analyzer.box_counting_unified(
                 segments, min_box_size, max_box_size, box_size_factor=box_size_factor)
