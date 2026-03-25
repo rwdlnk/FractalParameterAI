@@ -12,10 +12,10 @@ from skimage import measure
 
 # GPU acceleration for multifractal box counting
 try:
-    from .fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, box_counting_gpu, _prepare_segments_array
+    from .fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
 except ImportError:
     try:
-        from fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, box_counting_gpu, _prepare_segments_array
+        from fast_counting_gpu_2d import HAS_CUDA, count_segments_per_box_gpu, _prepare_segments_array
     except ImportError:
         HAS_CUDA = False
 
