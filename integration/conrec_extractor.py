@@ -25,10 +25,21 @@ class CONRECExtractor:
         self.domain_bounds = None
         self.debug = debug
         
-        # Lookup table for contour cases (from original Fortran)
+        # Lookup table for contour cases (from original Fortran).
+        # The 27 values are Bourke's CONREC castab in Fortran column-major order
+        # with index convention castab(sh(m1), sh(m2), sh(m3)). NumPy reshape uses
+        # C order (row-major), so the leftmost Python axis corresponds to Bourke's
+        # rightmost Fortran index. We transpose (2, 1, 0) so the lookup
+        #     self.castab[idx1, idx2, idx3]
+        # matches Bourke's intended castab(sh(m1), sh(m2), sh(m3)). Without this
+        # transpose, sh[m1] and sh[m3] are effectively swapped, which selects the
+        # wrong case for sign patterns where the contour crosses the two sides
+        # adjacent to m3 (the dominant pattern at a typical cell crossing) and
+        # causes xsect() to extrapolate to spurious points outside the triangle,
+        # inflating arclength and biasing the box-counting dimension upward.
         self.castab = np.array([
             [0, 0, 9],
-            [0, 1, 5], 
+            [0, 1, 5],
             [7, 4, 8],
             [0, 3, 6],
             [2, 3, 2],
@@ -36,8 +47,8 @@ class CONRECExtractor:
             [8, 4, 7],
             [5, 1, 0],
             [9, 0, 0]
-        ]).reshape(3, 3, 3)
-        
+        ]).reshape(3, 3, 3).transpose(2, 1, 0).copy()
+
         print("CONREC extractor initialized - using fixed precision implementation")
     
     def xsect(self, p1: int, p2: int, h: np.ndarray, xh: np.ndarray) -> float:
@@ -410,12 +421,13 @@ def _extract_interface_fast(f_grid: np.ndarray, x_grid: np.ndarray,
         x_cell_centers = 0.25 * (x_grid[:-1, :-1] + x_grid[:-1, 1:] + x_grid[1:, 1:] + x_grid[1:, :-1])
         y_cell_centers = 0.25 * (y_grid[:-1, :-1] + y_grid[:-1, 1:] + y_grid[1:, 1:] + y_grid[1:, :-1])
     
-    # Simplified CONREC lookup table
+    # Simplified CONREC lookup table; see CONRECExtractor.__init__ for the
+    # Fortran-vs-NumPy index-order rationale behind the (2, 1, 0) transpose.
     castab = np.array([
         [0, 0, 9], [0, 1, 5], [7, 4, 8],
         [0, 3, 6], [2, 3, 2], [6, 3, 0],
         [8, 4, 7], [5, 1, 0], [9, 0, 0]
-    ]).reshape(3, 3, 3)
+    ]).reshape(3, 3, 3).transpose(2, 1, 0).copy()
     
     # Fast grid scan with minimal checking
     for j in range(ny_cells - 1):
