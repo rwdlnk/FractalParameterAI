@@ -220,6 +220,25 @@ def vtk_time(vtk_file):
     return int(m.group(1)) / 1000.0 if m else 0.0
 
 
+def save_alpha_profile(data, profiles_dir, time_idx):
+    """Persist the horizontally-averaged volume-fraction profile <F>(y).
+
+    This is the same row-average that the integral mixing-thickness method
+    (Dalziel et al. 1999, Eq. 7) computes internally; saving it lets the
+    Ramaprabhu & Andrews (2004) profile comparison reuse Phase 1 output
+    without re-reading the fields. Written for every snapshot (including
+    t=0) as a two-column CSV ``y_m, alpha_mean``, one row per y-cell.
+
+    ``time_idx`` is the milliseconds-based timestep key already used for the
+    interface/boxcount files, so ``t = 6.0 s`` -> ``alpha_profile_t06000.csv``.
+    """
+    f_avg = np.mean(data['f'], axis=0)   # <F>(y), shape (ny,)
+    y_values = data['y'][0, :]           # y coordinates, shape (ny,)
+    prof = pd.DataFrame({'y_m': y_values, 'alpha_mean': f_avg})
+    prof_file = os.path.join(profiles_dir, f'alpha_profile_t{time_idx:05d}.csv')
+    prof.to_csv(prof_file, index=False)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Phase 1: Mixing Thickness + Fractal Dimension
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -233,8 +252,9 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
     H = physics.H
 
     # Create output subdirectories
-    for subdir in ['interfaces', 'fractal', 'summary']:
+    for subdir in ['interfaces', 'fractal', 'summary', 'profiles']:
         os.makedirs(os.path.join(analysis_dir, subdir), exist_ok=True)
+    profiles_dir = os.path.join(analysis_dir, 'profiles')
 
     # Fixed domain-based scales: max_box = L/2, min_box = 2*dx, factor = 1.5.
     # Using domain geometry ensures the same scale range at every timestep,
@@ -259,6 +279,15 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
         print(f"\n[{i+1}/{len(vtk_files)}] {basename}  (t={sim_time:.3f} s, tau={tau:.4f})")
 
         data = analyzer.read_vtk_file(vtk_file)
+
+        # Milliseconds-based timestep key, shared by interface/boxcount/profile files
+        time_idx = int(re.search(r'-(\d+)\.vtk$', basename).group(1))
+
+        # Save the row-averaged volume-fraction profile (every snapshot, incl. t=0)
+        try:
+            save_alpha_profile(data, profiles_dir, time_idx)
+        except Exception as e:
+            print(f"  WARNING: alpha profile save failed: {e}")
 
         # Skip t=0 -- flat interface, no fractal structure
         if sim_time < 0.01:
@@ -298,7 +327,6 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
                         'h_00': np.nan, 'h_01': np.nan}
 
         # Extract interface and save segments
-        time_idx = int(re.search(r'-(\d+)\.vtk$', basename).group(1))
         try:
             contours = analyzer.extract_interface(data['f'], data['x'], data['y'])
             segments = analyzer.convert_contours_to_segments(contours)
@@ -1328,8 +1356,9 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
     """Phase 1 for OpenFOAM cases: process all timesteps."""
     H = physics.H
 
-    for subdir in ['interfaces', 'fractal', 'summary']:
+    for subdir in ['interfaces', 'fractal', 'summary', 'profiles']:
         os.makedirs(os.path.join(analysis_dir, subdir), exist_ok=True)
+    profiles_dir = os.path.join(analysis_dir, 'profiles')
 
     # Fixed domain-based scales
     first_data = analyzer.read_openfoam_field(case_dir, of_times[0])
@@ -1349,6 +1378,15 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
         print(f"\n[{i+1}/{len(of_times)}] t={sim_time:.3f} s (tau={tau:.4f})")
 
         data = analyzer.read_openfoam_field(case_dir, sim_time)
+
+        # Milliseconds-based timestep key, shared by interface/boxcount/profile files
+        time_idx = int(sim_time * 1000)
+
+        # Save the row-averaged volume-fraction profile (every snapshot, incl. t=0)
+        try:
+            save_alpha_profile(data, profiles_dir, time_idx)
+        except Exception as e:
+            print(f"  WARNING: alpha profile save failed: {e}")
 
         if sim_time < 0.01:
             results.append({
@@ -1384,7 +1422,6 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             segments = analyzer.convert_contours_to_segments(contours)
             n_segments = len(segments)
 
-            time_idx = int(sim_time * 1000)
             interface_file = os.path.join(analysis_dir, 'interfaces',
                                           f'interface_t{time_idx:05d}.dat')
             with open(interface_file, 'w') as fout:
