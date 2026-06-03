@@ -396,6 +396,7 @@ def compute_mixing_3d(alpha_3d: np.ndarray, y_centers: np.ndarray,
 
     result['youngs_W'] = youngs_W
     result['mixing_efficiency'] = mixing_efficiency
+    result['_f_avg'] = f_avg
 
     return result
 
@@ -418,7 +419,7 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
                             mesh.y_max - mesh.dy / 2, mesh.ny)
 
     # Create output dirs
-    for subdir in ['fractal', 'summary']:
+    for subdir in ['fractal', 'summary', 'profiles']:
         os.makedirs(os.path.join(analysis_dir, subdir), exist_ok=True)
 
     use_numba = check_numba_available()
@@ -444,6 +445,11 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_triangles': 0, 'surface_area': 0.0,
             })
+            # Save flat profile at t=0
+            f_avg_0 = np.where(y_centers >= H0, 1.0, 0.0)
+            prof_df = pd.DataFrame({'y_m': y_centers, 'alpha_mean': f_avg_0})
+            prof_df.to_csv(os.path.join(analysis_dir, 'profiles',
+                                        'alpha_profile_t00000.csv'), index=False)
             results.append(row)
             print("  t=0: flat interface, skipping")
             continue
@@ -473,6 +479,16 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
                 'h_10': np.nan, 'h_11': np.nan, 'h_00': np.nan, 'h_01': np.nan,
                 'youngs_W': np.nan, 'mixing_efficiency': np.nan,
             }
+
+        # Save horizontally-averaged profile <F>(y)
+        f_avg = mix.pop('_f_avg', None)
+        if f_avg is not None:
+            t_ms = int(round(t * 1000))
+            prof_df = pd.DataFrame({'y_m': y_centers, 'alpha_mean': f_avg})
+            prof_file = os.path.join(analysis_dir, 'profiles',
+                                     f'alpha_profile_t{t_ms:05d}.csv')
+            prof_df.to_csv(prof_file, index=False)
+
         row.update(mix)
 
         # ── 3D fractal dimension from isosurface ──
@@ -928,6 +944,272 @@ def _plot_phase2(mf_results, phys, rt_physics, df, mf_output_dir):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Phase 3: Concentration Spectrum + Velocity Statistics (selected timesteps)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_horizontal_spectrum_3d(alpha_3d, y_centers, x_coords, z_coords,
+                                   y0, H, dx, dz):
+    """Dalziel-style horizontal concentration spectrum from 3D field.
+
+    1. Define slab: y0 - 0.1*H <= y <= y0
+    2. Average F over slab rows → F_bar(x, z)
+    3. 2D FFT in (x, z), power |F_hat|^2
+    4. Radial average in (kx, kz) → P(k_h)
+    5. Fit power law over specified bands
+
+    Returns dict with spectrum arrays and fitted slopes.
+    """
+    # Slab selection
+    slab_lo = y0 - 0.1 * H
+    slab_mask = (y_centers >= slab_lo) & (y_centers <= y0)
+    n_slab = int(slab_mask.sum())
+    if n_slab < 2:
+        return None
+
+    # Average over slab rows: alpha_3d is (nz, ny, nx)
+    f_slab = np.mean(alpha_3d[:, slab_mask, :], axis=1)  # shape (nz, nx)
+
+    # Subtract mean to get fluctuation
+    f_slab = f_slab - np.mean(f_slab)
+
+    # 2D FFT
+    nz, nx = f_slab.shape
+    f_hat = np.fft.fft2(f_slab)
+    power_2d = np.abs(f_hat) ** 2 / (nx * nz)
+
+    # Wavenumber grids
+    kx = np.fft.fftfreq(nx, d=dx)
+    kz = np.fft.fftfreq(nz, d=dz)
+    KX, KZ = np.meshgrid(kx, kz)
+    K_h = np.sqrt(KX**2 + KZ**2)
+
+    # Fundamental wavenumber (use x-direction domain length)
+    Lx = nx * dx
+    k0 = 1.0 / Lx  # cycles per metre (not 2π/L)
+
+    # Radial binning
+    k_max = 0.5 / min(dx, dz)  # Nyquist
+    n_bins = min(nx, nz) // 2
+    k_edges = np.linspace(0, k_max, n_bins + 1)
+    k_centers = 0.5 * (k_edges[:-1] + k_edges[1:])
+
+    P_radial = np.zeros(n_bins)
+    for ib in range(n_bins):
+        mask = (K_h >= k_edges[ib]) & (K_h < k_edges[ib + 1])
+        if mask.any():
+            P_radial[ib] = np.mean(power_2d[mask])
+
+    # Normalise wavenumbers by k0
+    k_norm = k_centers / k0
+
+    # Fit power law over bands
+    result = {
+        'k_over_k0': k_norm,
+        'P': P_radial,
+        'n_slab_rows': n_slab,
+        'k0': k0,
+    }
+
+    for band_name, k_lo, k_hi in [('10_25', 10, 25), ('10_50', 10, 50)]:
+        band_mask = (k_norm >= k_lo) & (k_norm <= k_hi) & (P_radial > 0)
+        if band_mask.sum() >= 3:
+            log_k = np.log10(k_norm[band_mask])
+            log_P = np.log10(P_radial[band_mask])
+            coeffs = np.polyfit(log_k, log_P, 1)
+            slope = coeffs[0]
+            residuals = log_P - np.polyval(coeffs, log_k)
+            ss_res = np.sum(residuals**2)
+            ss_tot = np.sum((log_P - np.mean(log_P))**2)
+            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+            result[f'slope_{band_name}'] = slope
+            result[f'r2_{band_name}'] = r2
+        else:
+            result[f'slope_{band_name}'] = np.nan
+            result[f'r2_{band_name}'] = np.nan
+
+    return result
+
+
+def compute_velocity_statistics_3d(U_3d, y_centers, H0):
+    """Compute velocity statistics from 3D velocity field.
+
+    U_3d: shape (nz, ny, nx, 3) — velocity components (ux, uy, uz)
+    Returns dict with RMS velocities, anisotropy, centreline values.
+    """
+    # Horizontally-averaged velocity profiles
+    u_mean = np.mean(U_3d, axis=(0, 2))  # shape (ny, 3)
+
+    # Fluctuations
+    u_prime = U_3d - u_mean[np.newaxis, :, np.newaxis, :]
+
+    # RMS profiles
+    u_rms = np.sqrt(np.mean(u_prime[:, :, :, 0]**2, axis=(0, 2)))
+    v_rms = np.sqrt(np.mean(u_prime[:, :, :, 1]**2, axis=(0, 2)))
+    w_rms = np.sqrt(np.mean(u_prime[:, :, :, 2]**2, axis=(0, 2)))
+
+    # Centreline index
+    j0 = np.argmin(np.abs(y_centers - H0))
+
+    # Anisotropy at centreline
+    u_rms_c = float(u_rms[j0])
+    v_rms_c = float(v_rms[j0])
+    w_rms_c = float(w_rms[j0])
+    anisotropy = v_rms_c / u_rms_c if u_rms_c > 1e-12 else np.nan
+
+    # Mass flux <v'F'> would need alpha field too — skip for now
+
+    return {
+        'y_centers': y_centers,
+        'u_rms': u_rms,
+        'v_rms': v_rms,
+        'w_rms': w_rms,
+        'u_rms_centreline': u_rms_c,
+        'v_rms_centreline': v_rms_c,
+        'w_rms_centreline': w_rms_c,
+        'anisotropy_v_over_u': anisotropy,
+    }
+
+
+def read_openfoam_velocity_3d(time_dir, mesh):
+    """Read the OpenFOAM U field and reshape to (nz, ny, nx, 3)."""
+    U_file = os.path.join(time_dir, 'U')
+    if not os.path.exists(U_file):
+        return None
+    try:
+        n_cells = mesh.nx * mesh.ny * mesh.nz
+        U = np.zeros((n_cells, 3))
+        in_data = False
+        count = 0
+        with open(U_file) as f:
+            for line in f:
+                stripped = line.strip()
+                if not in_data:
+                    if stripped == '(':
+                        in_data = True
+                    continue
+                if stripped == ')':
+                    break
+                if stripped.startswith('(') and stripped.endswith(')'):
+                    vals = stripped[1:-1].split()
+                    if len(vals) == 3 and count < n_cells:
+                        U[count] = [float(v) for v in vals]
+                        count += 1
+        if count != n_cells:
+            print(f"  WARNING: U read {count} cells, expected {n_cells}")
+        U_3d = U.reshape(mesh.nz, mesh.ny, mesh.nx, 3)
+        return U_3d
+    except Exception as e:
+        print(f"  WARNING: could not read U: {e}")
+        return None
+
+
+def run_phase3(case_dir, mesh, phys, rt_physics, analysis_dir,
+               spec_times, df):
+    """Run 3D concentration spectrum and velocity statistics at selected times."""
+    H = phys['H']
+    H0 = phys['H0']
+    is_decomposed = os.path.isdir(os.path.join(case_dir, 'processor0'))
+
+    y_centers = np.linspace(mesh.y_min + mesh.dy / 2,
+                            mesh.y_max - mesh.dy / 2, mesh.ny)
+    x_coords = np.linspace(mesh.x_min + mesh.dx / 2,
+                           mesh.x_max - mesh.dx / 2, mesh.nx)
+    z_coords = np.linspace(mesh.z_min + mesh.dz / 2,
+                           mesh.z_max - mesh.dz / 2, mesh.nz)
+
+    spec_dir = os.path.join(analysis_dir, 'spectra')
+    vel_dir = os.path.join(analysis_dir, 'velocity')
+    os.makedirs(spec_dir, exist_ok=True)
+    os.makedirs(vel_dir, exist_ok=True)
+
+    # Clamp to data range
+    if df is not None:
+        max_time = df['time'].max()
+        spec_times = [t for t in spec_times if t <= max_time + 0.5]
+
+    if not spec_times:
+        print("WARNING: No Phase 3 times within data range. Skipping.")
+        return
+
+    spec_summary = []
+    vel_summary = []
+
+    for target_t in spec_times:
+        tau = float(rt_physics.nondim_time(target_t))
+        print(f"\n  Phase 3: t={target_t:.2f} s (tau={tau:.4f})")
+
+        try:
+            if is_decomposed:
+                time_dir = reconstruct_timestep(case_dir, target_t)
+            else:
+                t_str = str(int(target_t)) if target_t == int(target_t) else f"{target_t}"
+                time_dir = os.path.join(case_dir, t_str)
+
+            # Concentration spectrum
+            alpha_3d = read_openfoam_alpha_3d(time_dir, mesh)
+            if alpha_3d is not None:
+                spec = compute_horizontal_spectrum_3d(
+                    alpha_3d, y_centers, x_coords, z_coords,
+                    H0, H, mesh.dx, mesh.dz)
+                if spec is not None:
+                    row = {'time': target_t, 'tau': tau,
+                           'n_slab_rows': spec['n_slab_rows']}
+                    for band in ['10_25', '10_50']:
+                        row[f'vof_slope_{band}'] = spec.get(f'slope_{band}', np.nan)
+                        row[f'vof_r2_{band}'] = spec.get(f'r2_{band}', np.nan)
+                    spec_summary.append(row)
+                    # Save full spectrum
+                    spec_df = pd.DataFrame({
+                        'k_over_k0': spec['k_over_k0'],
+                        'P': spec['P'],
+                    })
+                    spec_df.to_csv(os.path.join(spec_dir,
+                                  f'spectrum_3d_t{target_t:.2f}.csv'), index=False)
+                    print(f"    spectrum: slope_10_25={row.get('vof_slope_10_25', np.nan):.3f}, "
+                          f"slope_10_50={row.get('vof_slope_10_50', np.nan):.3f}")
+
+            # Velocity statistics
+            U_3d = read_openfoam_velocity_3d(time_dir, mesh)
+            if U_3d is not None:
+                vel = compute_velocity_statistics_3d(U_3d, y_centers, H0)
+                vel_row = {'time': target_t, 'tau': tau,
+                           'u_rms_centreline': vel['u_rms_centreline'],
+                           'v_rms_centreline': vel['v_rms_centreline'],
+                           'w_rms_centreline': vel['w_rms_centreline'],
+                           'anisotropy_v_over_u': vel['anisotropy_v_over_u']}
+                vel_summary.append(vel_row)
+                # Save profiles
+                vel_prof = pd.DataFrame({
+                    'y_m': vel['y_centers'],
+                    'u_rms': vel['u_rms'],
+                    'v_rms': vel['v_rms'],
+                    'w_rms': vel['w_rms'],
+                })
+                vel_prof.to_csv(os.path.join(vel_dir,
+                                f'velocity_profile_t{target_t:.2f}.csv'), index=False)
+                print(f"    velocity: v'/u'={vel['anisotropy_v_over_u']:.2f}, "
+                      f"v_rms={vel['v_rms_centreline']:.4f} m/s")
+
+                del U_3d
+            if alpha_3d is not None:
+                del alpha_3d
+
+        except Exception as e:
+            print(f"  WARNING: Phase 3 failed at t={target_t:.2f}: {e}")
+            import traceback; traceback.print_exc()
+
+    # Save summaries
+    if spec_summary:
+        pd.DataFrame(spec_summary).to_csv(
+            os.path.join(spec_dir, 'spectrum_summary_3d.csv'), index=False)
+        print(f"\n  Wrote spectrum summary ({len(spec_summary)} timesteps)")
+    if vel_summary:
+        pd.DataFrame(vel_summary).to_csv(
+            os.path.join(vel_dir, 'velocity_summary_3d.csv'), index=False)
+        print(f"  Wrote velocity summary ({len(vel_summary)} timesteps)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -948,6 +1230,10 @@ Examples:
                         help='Skip Phase 1 (use existing temporal_results.csv)')
     parser.add_argument('--skip-phase2', action='store_true',
                         help='Skip Phase 2 (multifractal analysis)')
+    parser.add_argument('--skip-phase3', action='store_true',
+                        help='Skip Phase 3 (spectra + velocity)')
+    parser.add_argument('--spec-times', type=str, default='2,4,6,8,10,12,14,16,18,20',
+                        help='Comma-separated times for Phase 3 analysis')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory (default: {case}/analysis)')
 
@@ -1027,6 +1313,15 @@ Examples:
         print("─" * 70)
         run_phase2(case_dir, phys, rt_physics, interface_times,
                    analysis_dir, mf_times, df)
+
+    # ── Phase 3 ──
+    if not args.skip_phase3:
+        print("\n" + "─" * 70)
+        print("PHASE 3: Concentration Spectrum + Velocity Statistics")
+        print("─" * 70)
+        spec_times = [float(t) for t in args.spec_times.split(',')]
+        run_phase3(case_dir, mesh, phys, rt_physics,
+                   analysis_dir, spec_times, df)
 
     print("\n" + "=" * 70)
     print("ANALYSIS COMPLETE")
