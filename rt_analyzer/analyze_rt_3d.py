@@ -741,10 +741,23 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
         BPE0 = df['BPE'].iloc[0] if 'BPE' in df.columns else np.nan
         df['PE_released'] = PE0 - df['PE']
         df['E_diss'] = df['PE_released'] - df['KE']
+        APE0 = df['APE'].iloc[0] if 'APE' in df.columns else np.nan
         with np.errstate(divide='ignore', invalid='ignore'):
             df['diss_fraction'] = df['E_diss'] / df['PE_released']
             df['ke_fraction'] = df['KE'] / df['PE_released']
+            # Two mixing efficiencies, differing only in denominator:
+            #   mixing_eff_bpe  ΔBPE / PE_released — share of the energy actually
+            #                   released that went into irreversible mixing; the
+            #                   natural partner of diss_fraction and ke_fraction,
+            #                   with which it closes the budget.
+            #   eta_dalziel     ΔBPE / |ΔAPE| — Dalziel et al. (2008) Phys. Fluids
+            #                   20, 065106, Eq. (23). Quote THIS one against their
+            #                   value. Note their eta = 1/2 is the theoretical
+            #                   ceiling (BPE cannot exceed the well-mixed state),
+            #                   which their experiment attains — not an empirical
+            #                   constant other flows should reproduce.
             df['mixing_eff_bpe'] = (df['BPE'] - BPE0) / df['PE_released']
+            df['eta_dalziel'] = (df['BPE'] - BPE0) / (APE0 - df['APE']).abs()
         # dissipation rate, one-sided at the ends
         t_arr = df['time'].values.astype(float)
         e_arr = df['E_diss'].values.astype(float)
