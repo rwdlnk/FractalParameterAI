@@ -1246,6 +1246,128 @@ def _plot_phase2(mf_results, phys, rt_physics, df, mf_output_dir):
 # Phase 3: Concentration Spectrum + Velocity Statistics (selected timesteps)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _pad_endramp_2d(f):
+    """Extend a (nz, nx) field to the next power of two in both directions.
+
+    Dalziel et al. (1999, p. 30) note the domain is not horizontally periodic and
+    handle it by extending the data "to the next power of 2 using a linear
+    interpolation between concentrations at either end of the domain" — an end
+    ramp, chosen in preference to window functions. Our 2D analyzer does this per
+    row; the 3D path previously did not, which made the same quantity
+    incomparable between 2D and 3D on a domain with slip walls in x and z.
+    """
+    nz, nx = f.shape
+
+    def _next_pow2(n):
+        p = 1 << (int(n - 1).bit_length())
+        return p if p >= n else p << 1
+
+    # x first, then z
+    nx_pad = _next_pow2(nx)
+    if nx_pad > nx:
+        m = nx_pad - nx
+        ramp = np.linspace(f[:, -1], f[:, 0], m + 1, axis=-1)[:, 1:]
+        f = np.concatenate([f, ramp], axis=1)
+    nz_pad = _next_pow2(nz)
+    if nz_pad > nz:
+        m = nz_pad - nz
+        ramp = np.linspace(f[-1, :], f[0, :], m + 1, axis=0)[1:, :]
+        f = np.concatenate([f, ramp], axis=0)
+    return f
+
+
+def _radial_power_spectrum(f_slab, dx, dz, n_bins_cap=None):
+    """Radially-averaged horizontal power spectrum of a (nz, nx) slab field.
+
+    Removes the mean, applies the end-ramp continuation, 2D FFTs, then bins
+    |F_hat|^2 by k_h = sqrt(kx^2 + kz^2). Wavenumbers are returned normalised by
+    k0 = 1/Lx (cycles per metre, matching Dalziel's k/k0 convention), computed
+    from the ORIGINAL domain length, not the padded one.
+    """
+    nz, nx = f_slab.shape
+    Lx = nx * dx
+    k0 = 1.0 / Lx
+
+    f = f_slab - np.mean(f_slab)
+    f = _pad_endramp_2d(f)
+    nz_p, nx_p = f.shape
+
+    power_2d = np.abs(np.fft.fft2(f)) ** 2 / (nx_p * nz_p)
+    KX, KZ = np.meshgrid(np.fft.fftfreq(nx_p, d=dx), np.fft.fftfreq(nz_p, d=dz))
+    K_h = np.sqrt(KX ** 2 + KZ ** 2)
+
+    k_max = 0.5 / min(dx, dz)
+    n_bins = min(nx, nz) // 2 if n_bins_cap is None else n_bins_cap
+    k_edges = np.linspace(0, k_max, n_bins + 1)
+    k_centers = 0.5 * (k_edges[:-1] + k_edges[1:])
+
+    P = np.zeros(n_bins)
+    for ib in range(n_bins):
+        m = (K_h >= k_edges[ib]) & (K_h < k_edges[ib + 1])
+        if m.any():
+            P[ib] = np.mean(power_2d[m])
+    return k_centers / k0, P, k0
+
+
+def _fit_bands(k_norm, P, bands, out, prefix=''):
+    """Least-squares power-law slope of P(k/k0) over each (name, lo, hi) band."""
+    for name, k_lo, k_hi in bands:
+        m = (k_norm >= k_lo) & (k_norm <= k_hi) & (P > 0)
+        if m.sum() >= 3:
+            lk, lp = np.log10(k_norm[m]), np.log10(P[m])
+            c = np.polyfit(lk, lp, 1)
+            res = lp - np.polyval(c, lk)
+            ss_tot = np.sum((lp - np.mean(lp)) ** 2)
+            out[f'{prefix}slope_{name}'] = c[0]
+            out[f'{prefix}r2_{name}'] = 1 - np.sum(res ** 2) / ss_tot if ss_tot > 0 else 0.0
+        else:
+            out[f'{prefix}slope_{name}'] = np.nan
+            out[f'{prefix}r2_{name}'] = np.nan
+    return out
+
+
+def compute_tke_spectrum_3d(U_3d, y_centers, y0, H, dx, dz):
+    """Horizontal-plane velocity and TKE spectra over the M1 slab (item E3).
+
+    E_u, E_v, E_w are the radially-averaged horizontal spectra of the three
+    velocity components, slab-averaged over y0 - 0.1H <= y <= y0 exactly as the
+    concentration spectrum, and E_tke = (E_u + E_v + E_w)/2.
+
+    Slopes are fitted over the same 10-25 and 10-50 k/k0 bands as M1, plus a
+    wider 5-50 band, since the inertial range of the velocity field need not
+    coincide with the concentration bands Dalziel chose. For the Chertkov (2003)
+    KO/BO discussion the quantity of interest is E_tke: 3D Kolmogorov-Obukhov
+    predicts -5/3, 2D Bolgiano-Obukhov -11/5.
+
+    U_3d is (nz, ny, nx, 3) with components (u, v, w) = (x, y, z).
+    """
+    slab = (y_centers >= y0 - 0.1 * H) & (y_centers <= y0)
+    if int(slab.sum()) < 2 or U_3d is None:
+        return None
+
+    out = {'n_slab_rows': int(slab.sum())}
+    E = {}
+    for i, comp in enumerate(('u', 'v', 'w')):
+        # Take the component FIRST. U_3d[:, slab, :, i] would combine two
+        # advanced indices (boolean slab, integer i) separated by a slice, which
+        # makes NumPy move the advanced axis to the front and silently yields
+        # (n_slab, nz, nx) — averaging over z instead of the slab.
+        f = np.mean(U_3d[..., i][:, slab, :], axis=1)     # (nz, nx)
+        k_norm, P, k0 = _radial_power_spectrum(f, dx, dz)
+        E[comp] = P
+        out['k_over_k0'] = k_norm
+        out['k0'] = k0
+        out[f'E_{comp}'] = P
+        _fit_bands(k_norm, P, [('10_25', 10, 25), ('10_50', 10, 50), ('5_50', 5, 50)],
+                   out, prefix=f'{comp}_')
+
+    out['E_tke'] = 0.5 * (E['u'] + E['v'] + E['w'])
+    _fit_bands(out['k_over_k0'], out['E_tke'],
+               [('10_25', 10, 25), ('10_50', 10, 50), ('5_50', 5, 50)],
+               out, prefix='tke_')
+    return out
+
+
 def compute_horizontal_spectrum_3d(alpha_3d, y_centers, x_coords, z_coords,
                                    y0, H, dx, dz):
     """Dalziel-style horizontal concentration spectrum from 3D field.
@@ -1268,64 +1390,21 @@ def compute_horizontal_spectrum_3d(alpha_3d, y_centers, x_coords, z_coords,
     # Average over slab rows: alpha_3d is (nz, ny, nx)
     f_slab = np.mean(alpha_3d[:, slab_mask, :], axis=1)  # shape (nz, nx)
 
-    # Subtract mean to get fluctuation
-    f_slab = f_slab - np.mean(f_slab)
+    # Mean removal, end-ramp continuation, 2D FFT and radial binning.
+    # The end ramp matters: the domain has slip walls in x and z, so it is not
+    # horizontally periodic, and Dalziel handles exactly this by extending to the
+    # next power of two by linear interpolation between the two end values.
+    k_norm, P_radial, k0 = _radial_power_spectrum(f_slab, dx, dz)
 
-    # 2D FFT
-    nz, nx = f_slab.shape
-    f_hat = np.fft.fft2(f_slab)
-    power_2d = np.abs(f_hat) ** 2 / (nx * nz)
-
-    # Wavenumber grids
-    kx = np.fft.fftfreq(nx, d=dx)
-    kz = np.fft.fftfreq(nz, d=dz)
-    KX, KZ = np.meshgrid(kx, kz)
-    K_h = np.sqrt(KX**2 + KZ**2)
-
-    # Fundamental wavenumber (use x-direction domain length)
-    Lx = nx * dx
-    k0 = 1.0 / Lx  # cycles per metre (not 2π/L)
-
-    # Radial binning
-    k_max = 0.5 / min(dx, dz)  # Nyquist
-    n_bins = min(nx, nz) // 2
-    k_edges = np.linspace(0, k_max, n_bins + 1)
-    k_centers = 0.5 * (k_edges[:-1] + k_edges[1:])
-
-    P_radial = np.zeros(n_bins)
-    for ib in range(n_bins):
-        mask = (K_h >= k_edges[ib]) & (K_h < k_edges[ib + 1])
-        if mask.any():
-            P_radial[ib] = np.mean(power_2d[mask])
-
-    # Normalise wavenumbers by k0
-    k_norm = k_centers / k0
-
-    # Fit power law over bands
     result = {
         'k_over_k0': k_norm,
         'P': P_radial,
         'n_slab_rows': n_slab,
         'k0': k0,
     }
-
-    for band_name, k_lo, k_hi in [('10_25', 10, 25), ('10_50', 10, 50)]:
-        band_mask = (k_norm >= k_lo) & (k_norm <= k_hi) & (P_radial > 0)
-        if band_mask.sum() >= 3:
-            log_k = np.log10(k_norm[band_mask])
-            log_P = np.log10(P_radial[band_mask])
-            coeffs = np.polyfit(log_k, log_P, 1)
-            slope = coeffs[0]
-            residuals = log_P - np.polyval(coeffs, log_k)
-            ss_res = np.sum(residuals**2)
-            ss_tot = np.sum((log_P - np.mean(log_P))**2)
-            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-            result[f'slope_{band_name}'] = slope
-            result[f'r2_{band_name}'] = r2
-        else:
-            result[f'slope_{band_name}'] = np.nan
-            result[f'r2_{band_name}'] = np.nan
-
+    # 10-25 is Dalziel's fit band for the numerical simulations (Fig. 17),
+    # 10-50 for the experiments (Fig. 15). Report both.
+    _fit_bands(k_norm, P_radial, [('10_25', 10, 25), ('10_50', 10, 50)], result)
     return result
 
 
@@ -1431,6 +1510,7 @@ def run_phase3(case_dir, mesh, phys, rt_physics, analysis_dir,
         return
 
     spec_summary = []
+    tke_summary = []
     vel_summary = []
 
     for target_t in spec_times:
@@ -1489,6 +1569,27 @@ def run_phase3(case_dir, mesh, phys, rt_physics, analysis_dir,
                 print(f"    velocity: v'/u'={vel['anisotropy_v_over_u']:.2f}, "
                       f"v_rms={vel['v_rms_centreline']:.4f} m/s")
 
+                # TKE / velocity-component spectra over the same slab (item E3)
+                tke = compute_tke_spectrum_3d(U_3d, y_centers, H0, H,
+                                              mesh.dx, mesh.dz)
+                if tke is not None:
+                    trow = {'time': target_t, 'tau': tau,
+                            'n_slab_rows': tke['n_slab_rows']}
+                    for comp in ('u', 'v', 'w', 'tke'):
+                        for band in ('10_25', '10_50', '5_50'):
+                            trow[f'{comp}_slope_{band}'] = tke.get(f'{comp}_slope_{band}', np.nan)
+                            trow[f'{comp}_r2_{band}'] = tke.get(f'{comp}_r2_{band}', np.nan)
+                    tke_summary.append(trow)
+                    pd.DataFrame({
+                        'k_over_k0': tke['k_over_k0'],
+                        'E_u': tke['E_u'], 'E_v': tke['E_v'], 'E_w': tke['E_w'],
+                        'E_tke': tke['E_tke'],
+                    }).to_csv(os.path.join(spec_dir,
+                              f'tke_spectrum_3d_t{target_t:.2f}.csv'), index=False)
+                    print(f"    TKE spectrum: slope_10_50={trow['tke_slope_10_50']:.3f} "
+                          f"(R2={trow['tke_r2_10_50']:.2f})  "
+                          f"[KO -1.67, BO -2.20]")
+
                 del U_3d
             if alpha_3d is not None:
                 del alpha_3d
@@ -1506,6 +1607,10 @@ def run_phase3(case_dir, mesh, phys, rt_physics, analysis_dir,
         pd.DataFrame(vel_summary).to_csv(
             os.path.join(vel_dir, 'velocity_summary_3d.csv'), index=False)
         print(f"  Wrote velocity summary ({len(vel_summary)} timesteps)")
+    if tke_summary:
+        pd.DataFrame(tke_summary).to_csv(
+            os.path.join(spec_dir, 'tke_spectrum_summary_3d.csv'), index=False)
+        print(f"  Wrote TKE spectrum summary ({len(tke_summary)} timesteps)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
