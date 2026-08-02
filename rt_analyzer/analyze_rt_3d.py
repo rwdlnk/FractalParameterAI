@@ -405,8 +405,150 @@ def compute_mixing_3d(alpha_3d: np.ndarray, y_centers: np.ndarray,
 # Phase 1: Mixing + Fractal Dimension (all timesteps)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _compute_projected_D(tri_mesh, phys, mesh, analysis_dir, t):
+    """Compute fractal dimension of the isosurface projected onto the x-y plane.
+
+    Projects all triangle edges onto the x-y plane (dropping z, the depth
+    axis), giving the silhouette seen looking through the tank from the
+    front.  This is the "shadow" dimension comparable to Linden, Redondo
+    & Youngs (1994), who projected the 3D isosurface onto a viewing plane.
+
+    Gravity is along y; x is horizontal width; z is depth (collapsed).
+
+    Returns (D_projected, R²).
+    """
+    verts = tri_mesh.vertices                  # (N, 3) — x, y, z
+    tris  = tri_mesh.triangles                 # (M, 3) — vertex indices
+
+    # Extract unique edges and project onto x-y (columns 0, 1)
+    edge_set = set()
+    for tri in tris:
+        for i, j in [(0,1), (1,2), (2,0)]:
+            e = (min(tri[i], tri[j]), max(tri[i], tri[j]))
+            edge_set.add(e)
+
+    # Build projected 2D segments [(x1,y1), (x2,y2)]
+    segments = []
+    for i, j in edge_set:
+        p1 = (float(verts[i, 0]), float(verts[i, 1]))   # (x, y)
+        p2 = (float(verts[j, 0]), float(verts[j, 1]))
+        segments.append((p1, p2))
+
+    if len(segments) < 10:
+        return np.nan, np.nan
+
+    # Domain bounds in the x-y projection
+    x_min, x_max = float(verts[:, 0].min()), float(verts[:, 0].max())
+    z_min, z_max = float(verts[:, 1].min()), float(verts[:, 1].max())
+    L_proj = max(x_max - x_min, z_max - z_min)
+
+    # Box sizes: geometric ladder from L_proj/2 down to 2*max(dx,dy)
+    min_box = max(mesh.dx, mesh.dy) * 2
+    max_box = L_proj / 2
+    factor  = 1.5
+    box_sizes = []
+    bs = max_box
+    while bs >= min_box:
+        box_sizes.append(bs)
+        bs /= factor
+    if len(box_sizes) < 4:
+        return np.nan, np.nan
+
+    # Count occupied boxes at each scale (single offset for speed)
+    counts = []
+    for bs in box_sizes:
+        occupied = set()
+        for (x1, z1), (x2, z2) in segments:
+            # Rasterise segment: mark boxes at both endpoints and midpoint
+            for frac in [0.0, 0.5, 1.0]:
+                px = x1 + frac * (x2 - x1)
+                pz = z1 + frac * (z2 - z1)
+                bx = int((px - x_min) / bs)
+                bz = int((pz - z_min) / bs)
+                occupied.add((bx, bz))
+        counts.append(len(occupied))
+
+    # Log-log fit
+    log_eps = np.log(box_sizes)
+    log_N   = np.log(np.array(counts, dtype=float))
+    slope, intercept, r_value, _, _ = stats.linregress(log_eps, log_N)
+    D_proj = -slope
+    R2     = r_value ** 2
+
+    return D_proj, R2
+
+
+def read_velocity_fast(time_dir, mesh):
+    """Read U into (nz, ny, nx, 3) with a vectorised parse.
+
+    The line-by-line reader used by Phase 3 costs minutes per snapshot at 20M
+    cells, which is prohibitive when every timestep needs it. Falls back to that
+    reader if the fast path fails.
+    """
+    U_file = os.path.join(time_dir, 'U')
+    if not os.path.exists(U_file):
+        return None
+    n_cells = mesh.nx * mesh.ny * mesh.nz
+    try:
+        with open(U_file) as f:
+            txt = f.read()
+        i = txt.index('(', txt.index('nonuniform'))
+        end = txt.index('boundaryField') if 'boundaryField' in txt else len(txt)
+        j = txt.rindex(')', 0, end)
+        block = txt[i + 1:j].translate({ord('('): ' ', ord(')'): ' '})
+        del txt
+        arr = np.fromstring(block, sep=' ')
+        del block
+        if arr.size != 3 * n_cells:
+            raise ValueError(f"parsed {arr.size} values, expected {3 * n_cells}")
+        return arr.reshape(mesh.nz, mesh.ny, mesh.nx, 3)
+    except Exception as e:
+        print(f"  (fast U read failed: {e}; falling back)")
+        return read_openfoam_velocity_3d(time_dir, mesh)
+
+
+def compute_energy_budget_3d(alpha_3d, U_3d, y_centers, phys, mesh):
+    """Resolved-scale energy budget for Rayleigh-Taylor.
+
+    PE  = sum(rho g y dV)   total potential energy
+    BPE = PE of the adiabatically re-sorted minimum-PE state (Winters et al.
+          1995): densities sorted heaviest-to-lightest and restacked bottom-up.
+          The rise in BPE measures irreversible mixing.
+    APE = PE - BPE, the part available to drive motion
+    KE  = sum(0.5 rho |u|^2 dV)
+
+    The caller forms the cumulative dissipation from PE(0) - PE(t) - KE(t).
+    This budget is dominated by the largest scales, so unlike the enstrophy
+    integral (whose spectral density ~ k^2 E(k) peaks at the grid scale) it does
+    not require the dissipation range to be resolved.
+
+    alpha_3d is the heavy-fluid volume fraction, indexed (nz, ny, nx).
+    """
+    g = phys['g']
+    rho_h, rho_l = phys['rho_heavy'], phys['rho_light']
+    dV = mesh.dx * mesh.dy * mesh.dz
+
+    rho = rho_l + (rho_h - rho_l) * alpha_3d
+    y = y_centers[None, :, None]
+
+    PE = float(np.sum(rho * y) * g * dV)
+
+    # Minimum-PE rearrangement: heaviest fluid into the lowest cells. On a
+    # uniform mesh this is a sort against cell-centre heights, each repeated
+    # nx*nz times.
+    rho_sorted = np.sort(rho, axis=None)[::-1]
+    y_stack = np.repeat(y_centers, mesh.nx * mesh.nz)
+    BPE = float(np.sum(rho_sorted * y_stack) * g * dV)
+    del rho_sorted, y_stack
+
+    out = {'PE': PE, 'BPE': BPE, 'APE': PE - BPE}
+    out['KE'] = (float(0.5 * np.sum(rho * np.sum(U_3d * U_3d, axis=-1)) * dV)
+                 if U_3d is not None else np.nan)
+    return out
+
+
 def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
-               analysis_dir) -> pd.DataFrame:
+               analysis_dir, do_energy=True) -> pd.DataFrame:
     """Process all timesteps: mixing thickness + 3D fractal dimension.
 
     Returns DataFrame with temporal results.
@@ -445,6 +587,22 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_triangles': 0, 'surface_area': 0.0,
             })
+            if do_energy:
+                # Reference state: heavy above H0, light below, at rest. Computed
+                # analytically rather than read, since the sub-grid perturbation
+                # changes PE by O(sigma/H) ~ 1e-4 and this fixes the datum that
+                # every later PE_released is measured against.
+                dV = mesh.dx * mesh.dy * mesh.dz
+                ncol = mesh.nx * mesh.nz
+                rho_col = np.where(y_centers >= H0, phys['rho_heavy'], phys['rho_light'])
+                PE0 = float(np.sum(rho_col * y_centers) * phys['g'] * dV * ncol)
+                # Sorted (minimum-PE) state has the HEAVY fluid at the bottom —
+                # the inverse of the unstable initial stacking, so BPE0 << PE0
+                # and APE0 = PE0 - BPE0 is the full reservoir driving the flow.
+                rho_sorted0 = np.sort(rho_col)[::-1]
+                BPE0 = float(np.sum(rho_sorted0 * y_centers) * phys['g'] * dV * ncol)
+                row.update({'PE': PE0, 'BPE': BPE0, 'APE': PE0 - BPE0, 'KE': 0.0})
+
             # Save flat profile at t=0
             f_avg_0 = np.where(y_centers >= H0, 1.0, 0.0)
             prof_df = pd.DataFrame({'y_m': y_centers, 'alpha_mean': f_avg_0})
@@ -466,6 +624,15 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
             alpha_3d = read_openfoam_alpha_3d(time_dir, mesh)
             if alpha_3d is not None:
                 mix = compute_mixing_3d(alpha_3d, y_centers, H0, H)
+                if do_energy:
+                    try:
+                        U_3d = read_velocity_fast(time_dir, mesh)
+                        energy = compute_energy_budget_3d(alpha_3d, U_3d,
+                                                          y_centers, phys, mesh)
+                        del U_3d
+                        row.update(energy)
+                    except Exception as e:
+                        print(f"  WARNING: energy budget failed: {e}")
                 del alpha_3d  # Free memory
             else:
                 print("  WARNING: could not read alpha.water")
@@ -537,9 +704,21 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
         row['n_triangles'] = n_tri
         row['surface_area'] = surf_area
 
+        # ── Projected fractal dimension (shadow onto x-z plane) ──
+        fd_proj, fd_proj_r2 = np.nan, np.nan
+        try:
+            if n_tri >= 10:
+                fd_proj, fd_proj_r2 = _compute_projected_D(
+                    tri_mesh, phys, mesh, analysis_dir, t)
+        except Exception as e:
+            print(f"  WARNING: projected D failed: {e}")
+
+        row['fractal_dim_proj'] = fd_proj
+        row['fd_r_squared_proj'] = fd_proj_r2
+
         elapsed = time_mod.time() - t0
         print(f"  h_int={row.get('h_total_int', np.nan):.5f}  "
-              f"D={fd_dim:.4f}+/-{fd_err:.4f}  R2={fd_r2:.4f}  "
+              f"D={fd_dim:.4f}+/-{fd_err:.4f}  Dproj={fd_proj:.4f}  "
               f"tri={n_tri}  ({elapsed:.1f}s)")
 
         results.append(row)
@@ -551,6 +730,33 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
                 'h_10', 'h_11', 'h_00', 'h_01']:
         if col in df.columns:
             df[col + '_nondim'] = df[col] / H
+
+    # ── Energy budget: derived quantities ──
+    # PE(0) - PE(t) = KE(t) + E_diss(t). E_diss is cumulative dissipation, and
+    # its time derivative is the dissipation rate. This route to dissipation is
+    # large-scale dominated, so it converges at resolutions where the enstrophy
+    # integral (2*nu*Omega) is still grid-determined.
+    if {'PE', 'KE'}.issubset(df.columns) and df['PE'].notna().any():
+        PE0 = df['PE'].iloc[0]
+        BPE0 = df['BPE'].iloc[0] if 'BPE' in df.columns else np.nan
+        df['PE_released'] = PE0 - df['PE']
+        df['E_diss'] = df['PE_released'] - df['KE']
+        with np.errstate(divide='ignore', invalid='ignore'):
+            df['diss_fraction'] = df['E_diss'] / df['PE_released']
+            df['ke_fraction'] = df['KE'] / df['PE_released']
+            df['mixing_eff_bpe'] = (df['BPE'] - BPE0) / df['PE_released']
+        # dissipation rate, one-sided at the ends
+        t_arr = df['time'].values.astype(float)
+        e_arr = df['E_diss'].values.astype(float)
+        if len(t_arr) > 2 and np.isfinite(e_arr).sum() > 2:
+            df['diss_rate'] = np.gradient(e_arr, t_arr)
+        else:
+            df['diss_rate'] = np.nan
+        # normalise: rate / (rho_ref * (A g)^{3/2} H^{1/2} * volume)
+        rho_ref = 0.5 * (phys['rho_heavy'] + phys['rho_light'])
+        vol = phys['L'] * phys['H'] * phys['W']
+        scale = rho_ref * (phys['A'] * phys['g']) ** 1.5 * phys['H'] ** 0.5 * vol
+        df['diss_rate_star'] = df['diss_rate'] / scale if scale > 0 else np.nan
 
     csv_file = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
     df.to_csv(csv_file, index=False)
@@ -1232,6 +1438,10 @@ Examples:
                         help='Skip Phase 2 (multifractal analysis)')
     parser.add_argument('--skip-phase3', action='store_true',
                         help='Skip Phase 3 (spectra + velocity)')
+    parser.add_argument('--skip-energy', action='store_true',
+                        help='Skip the Phase 1 energy budget (PE/BPE/KE and the '
+                             'dissipation derived from it). Saves reading U at '
+                             'every timestep.')
     parser.add_argument('--spec-times', type=str, default='2,4,6,8,10,12,14,16,18,20',
                         help='Comma-separated times for Phase 3 analysis')
     parser.add_argument('--output-dir', type=str, default=None,
@@ -1296,7 +1506,8 @@ Examples:
         print("PHASE 1: Mixing Thickness + 3D Fractal Dimension")
         print("─" * 70)
         df = run_phase1(case_dir, mesh, phys, rt_physics,
-                        interface_times, analysis_dir)
+                        interface_times, analysis_dir,
+                        do_energy=not args.skip_energy)
     else:
         csv_file = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
         if os.path.isfile(csv_file):
