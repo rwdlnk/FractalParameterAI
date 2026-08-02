@@ -212,6 +212,179 @@ class PowerSpectrumAnalyzer:
 
         return results
 
+    def analyze_dalziel_horizontal_spectrum(self,
+                                            field: np.ndarray,
+                                            x_grid: np.ndarray,
+                                            y_grid: np.ndarray,
+                                            y0: float,
+                                            H: float,
+                                            slab_frac: float = 0.1,
+                                            bands=((10.0, 25.0), (10.0, 50.0)),
+                                            field_name: str = 'F') -> Dict:
+        """
+        Dalziel, Linden & Youngs (1999) JFM §6.1 horizontal concentration spectrum.
+
+        Faithful reproduction of their method (verified against the paper, pp.29-34):
+          * 1-D FFT *along the tank* (x, axis 0) only -- NOT a 2-D radial spectrum.
+          * Computed for each horizontal row in the slab
+                y0 - slab_frac*H <= y <= y0
+            i.e. -slab_frac <= (y - y0)/H <= 0, just below the *initial* interface
+            (Dalziel: -0.1 <= z/H <= 0). Power is arithmetically averaged over the
+            slab rows.
+          * Non-periodic continuation: each row is padded to the next power of two by
+            *linear interpolation between its two end concentrations* (Dalziel tested
+            window functions and deliberately chose end-ramp padding instead).
+          * Wavenumber normalised by k0 = 2*pi/L, L = along-tank domain length, so
+            k/k0 is the physical mode number (k/k0 = m * N_orig / N_pad for padded mode m).
+          * Weighted (uniform-per-log-interval, w = 1/sqrt(k/k0)) least-squares power-law
+            fit P ~ (k/k0)^beta. The concentration spectrum is curved (Dalziel notes this
+            explicitly), so the slope is band-dependent; we fit a *fixed* set of bands at
+            every grid for an apples-to-apples cross-grid/cross-code comparison. Dalziel
+            used 10 <= k/k0 <= 25 for his 160-point simulations and 10 <= k/k0 <= 50 for
+            his higher-resolution experimental images; we report both. The 6*dx Nyquist-ish
+            limit k_6dx = N_orig/6 is recorded so a band reaching past it (e.g. 10-50 on a
+            coarse grid) can be flagged as not fully resolved.
+
+        Args:
+            field:     2-D scalar field, indexed [i_x, j_y] (axis 0 = along-tank x).
+            x_grid:    2-D x-coordinate grid (same shape as field).
+            y_grid:    2-D y-coordinate grid (same shape as field).
+            y0:        Initial interface height (fixed; e.g. domain centre 0.25 m).
+            H:         Vertical domain extent (e.g. 0.5 m).
+            slab_frac: Slab thickness as a fraction of H below y0 (Dalziel: 0.1).
+            bands:     Iterable of (k/k0 lower, k/k0 upper) fit bands, fixed across grids.
+            field_name: Label.
+
+        Returns:
+            Dict with shared k_over_k0, power, k0, L, n_slab_rows, n_pad, n_orig, k_6dx,
+            plus one entry per band keyed 'fit_<lo>_<hi>' (e.g. 'fit_10_25'), each a
+            sub-dict with power_law_slope (=beta, negative), beta_abs, R^2, fit edges,
+            n_fit_points and fully_resolved. Top-level power_law_slope/beta_abs/R^2 mirror
+            the first band for convenience.
+        """
+        N_orig, ny = field.shape
+        if N_orig < 8 or ny < 2:
+            return self._empty_dalziel_results()
+
+        dx = np.abs(x_grid[1, 0] - x_grid[0, 0])
+        L = N_orig * dx
+        k0 = 2.0 * np.pi / L
+        k_6dx = N_orig / 6.0
+
+        # --- Select slab rows just below the initial interface ---
+        y_values = y_grid[0, :]
+        slab_mask = (y_values >= y0 - slab_frac * H) & (y_values <= y0)
+        slab_idx = np.where(slab_mask)[0]
+        if len(slab_idx) == 0:
+            # Fall back to the single row nearest y0
+            slab_idx = np.array([int(np.argmin(np.abs(y_values - y0)))])
+
+        # --- Next power of two for padding ---
+        N_pad = 1 << (int(N_orig - 1).bit_length())
+        if N_pad < N_orig:
+            N_pad <<= 1
+        M = N_pad - N_orig  # number of continuation points
+
+        # --- 1-D FFT per slab row, arithmetic mean of power ---
+        n_modes = N_pad // 2 + 1
+        power_sum = np.zeros(n_modes)
+        for j in slab_idx:
+            line = field[:, j].astype(np.float64)
+            if M > 0:
+                # Linear ramp from the last value back to the first (periodic close)
+                ramp = np.linspace(line[-1], line[0], M + 1)[1:]
+                padded = np.concatenate([line, ramp])
+            else:
+                padded = line
+            fft_line = np.fft.rfft(padded)
+            power_sum += (np.abs(fft_line) ** 2) / N_pad
+
+        power = power_sum / len(slab_idx)
+
+        # --- Physical dimensionless wavenumber k/k0 (drop DC) ---
+        m = np.arange(n_modes)
+        k_over_k0 = m * (N_orig / N_pad)
+        nz = m > 0
+        k_over_k0 = k_over_k0[nz]
+        power = power[nz]
+
+        # --- Fit each fixed band ---
+        results = {
+            'field_name': field_name,
+            'k_over_k0': k_over_k0,
+            'power': power,
+            'k0': k0,
+            'L': L,
+            'n_slab_rows': int(len(slab_idx)),
+            'slab_y_range': (float(y0 - slab_frac * H), float(y0)),
+            'n_pad': int(N_pad),
+            'n_orig': int(N_orig),
+            'k_6dx': float(k_6dx),
+            'band_keys': [],
+        }
+        first_fit = None
+        for lo, hi in bands:
+            fit = self._fit_dalziel_powerlaw(k_over_k0, power, lo, hi)
+            fit['fully_resolved'] = bool(hi <= k_6dx)
+            key = f'fit_{int(round(lo))}_{int(round(hi))}'
+            results[key] = fit
+            results['band_keys'].append(key)
+            if first_fit is None:
+                first_fit = fit
+        # Mirror the first band at top level for convenience / backward compat.
+        if first_fit is not None:
+            results['power_law_slope'] = first_fit['power_law_slope']
+            results['beta_abs'] = first_fit['beta_abs']
+            results['power_law_r_squared'] = first_fit['power_law_r_squared']
+        return results
+
+    def _fit_dalziel_powerlaw(self, k_over_k0: np.ndarray, power: np.ndarray,
+                              k_k0_min: float, k_k0_max: float) -> Dict:
+        """Weighted (uniform-per-log-interval) LSQ power-law fit over a k/k0 band."""
+        band = (k_over_k0 >= k_k0_min) & (k_over_k0 <= k_k0_max) & (power > 0)
+        if np.sum(band) < 3:
+            return {'power_law_slope': np.nan, 'beta_abs': np.nan,
+                    'power_law_r_squared': np.nan,
+                    'fit_k_k0_min': k_k0_min, 'fit_k_k0_max': k_k0_max,
+                    'n_fit_points': int(np.sum(band))}
+
+        kf = k_over_k0[band]
+        pf = power[band]
+        log_k = np.log10(kf)
+        log_p = np.log10(pf)
+        # Weight uniformly per logarithmic interval (else the densely sampled
+        # high-k end dominates an ordinary log-log fit). np.polyfit weights act
+        # on residuals, so pass sqrt of the per-point weight 1/(k/k0).
+        w = 1.0 / np.sqrt(kf)
+        slope, intercept = np.polyfit(log_k, log_p, 1, w=w)
+
+        predicted = slope * log_k + intercept
+        ss_res = np.sum(w**2 * (log_p - predicted) ** 2)
+        ss_tot = np.sum(w**2 * (log_p - np.average(log_p, weights=w**2)) ** 2)
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+        return {
+            'power_law_slope': float(slope),
+            'beta_abs': float(abs(slope)),
+            'power_law_intercept': float(intercept),
+            'power_law_r_squared': float(r_squared),
+            'fit_k_k0_min': float(k_k0_min),
+            'fit_k_k0_max': float(k_k0_max),
+            'n_fit_points': int(np.sum(band)),
+        }
+
+    def _empty_dalziel_results(self) -> Dict:
+        """Empty Dalziel-spectrum result."""
+        return {
+            'power_law_slope': np.nan, 'beta_abs': np.nan,
+            'power_law_r_squared': np.nan,
+            'k_over_k0': np.array([]), 'power': np.array([]),
+            'k0': np.nan, 'L': np.nan, 'n_slab_rows': 0,
+            'slab_y_range': (np.nan, np.nan), 'n_pad': 0, 'n_orig': 0,
+            'k_6dx': np.nan, 'band_keys': [],
+            'field_name': 'unknown',
+        }
+
     def analyze_tke_spectrum(self,
                             u_field: np.ndarray,
                             v_field: np.ndarray,

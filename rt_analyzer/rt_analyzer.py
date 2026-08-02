@@ -608,8 +608,9 @@ class RTAnalyzer:
             }
 
     def compute_fractal_dimension(self, data, min_box_size=0.001,
-                                   max_box_size=None, box_size_factor=1.5):
-        """Compute fractal dimension of the interface."""
+                                   max_box_size=None, box_size_factor=1.5,
+                                   level=0.5):
+        """Compute fractal dimension of the interface at a given contour level."""
         if self.fractal_analyzer is None:
             print("Fractal analyzer not available. Skipping fractal dimension calculation.")
             return {
@@ -617,9 +618,9 @@ class RTAnalyzer:
                 'error': np.nan,
                 'r_squared': np.nan
             }
-        
-        # Extract contours
-        contours = self.extract_interface(data['f'], data['x'], data['y'])
+
+        # Extract contours at the requested level
+        contours = self.extract_interface(data['f'], data['x'], data['y'], level=level)
         
         # Convert to segments
         segments = self.convert_contours_to_segments(contours)

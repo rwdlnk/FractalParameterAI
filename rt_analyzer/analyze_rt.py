@@ -243,12 +243,20 @@ def save_alpha_profile(data, profiles_dir, time_idx):
 # Phase 1: Mixing Thickness + Fractal Dimension
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
+def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0,
+               contour_levels=None):
     """Process all timesteps for mixing thickness and fractal dimension.
+
+    contour_levels: list of VOF levels at which to compute fractal D
+        (default [0.5]).  Level 0.5 always writes to the original
+        backward-compatible filenames; additional levels write to
+        interface_F{NN}_t*.dat and boxcount_F{NN}_t*.csv files.
 
     Returns:
         DataFrame with temporal results
     """
+    if contour_levels is None:
+        contour_levels = [0.5]
     H = physics.H
 
     # Create output subdirectories
@@ -289,9 +297,13 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
         except Exception as e:
             print(f"  WARNING: alpha profile save failed: {e}")
 
+        # Helper: column name suffix for a given level (0.5->'F05', 0.1->'F01')
+        def _level_col(lv):
+            return f'F{int(round(lv * 10)):02d}'
+
         # Skip t=0 -- flat interface, no fractal structure
         if sim_time < 0.01:
-            results.append({
+            row = {
                 'time': sim_time, 'tau': tau,
                 'ht_geo': 0.0, 'hb_geo': 0.0, 'h_total_geo': 0.0,
                 'ht_stat': 0.0, 'hb_stat': 0.0, 'h_total_stat': 0.0,
@@ -299,7 +311,14 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
                 'h_10': 0.0, 'h_11': H/2.0, 'h_00': H/2.0, 'h_01': 0.0,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_segments': 0
-            })
+            }
+            for lv in contour_levels:
+                if lv == 0.5:
+                    continue
+                col = _level_col(lv)
+                row[f'fractal_dim_{col}'] = np.nan
+                row[f'fd_r_squared_{col}'] = np.nan
+            results.append(row)
             print("  t=0: flat interface, skipping")
             continue
 
@@ -326,53 +345,84 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
                         'h_10': np.nan, 'h_11': np.nan,
                         'h_00': np.nan, 'h_01': np.nan}
 
-        # Extract interface and save segments
-        try:
-            contours = analyzer.extract_interface(data['f'], data['x'], data['y'])
-            segments = analyzer.convert_contours_to_segments(contours)
-            n_segments = len(segments)
+        # Interface extraction + fractal dimension for each contour level
+        n_segments = 0
+        fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
+        extra_fd = {}  # {level: (dim, r2)} for non-0.5 levels
 
-            interface_file = os.path.join(analysis_dir, 'interfaces',
+        for lv in contour_levels:
+            col = _level_col(lv)
+            is_default = (lv == 0.5)
+
+            # Interface file: default level uses backward-compatible name
+            if is_default:
+                iface_file = os.path.join(analysis_dir, 'interfaces',
                                           f'interface_t{time_idx:05d}.dat')
-            with open(interface_file, 'w') as fout:
-                fout.write(f"# Interface at t={sim_time:.6f} s (tau={tau:.6f})\n")
-                fout.write(f"# {n_segments} segments from {len(contours)} contour(s)\n")
-                fout.write("# x1,y1 x2,y2\n")
-                for seg in segments:
-                    fout.write(f"{seg[0][0]:.7f},{seg[0][1]:.7f} "
-                              f"{seg[1][0]:.7f},{seg[1][1]:.7f}\n")
-        except Exception as e:
-            print(f"  WARNING: interface extraction failed: {e}")
-            n_segments = 0
+            else:
+                iface_file = os.path.join(analysis_dir, 'interfaces',
+                                          f'interface_{col}_t{time_idx:05d}.dat')
 
-        # Fractal dimension (fixed domain-based scales)
-        try:
-            fd = analyzer.compute_fractal_dimension(
-                data, min_box_size=fixed_min_box,
-                max_box_size=fixed_max_box, box_size_factor=fixed_factor)
-            fd_dim = fd['dimension']
-            fd_err = fd['error']
-            fd_r2 = fd['r_squared']
+            try:
+                contours_lv = analyzer.extract_interface(
+                    data['f'], data['x'], data['y'], level=lv)
+                segments_lv = analyzer.convert_contours_to_segments(contours_lv)
+                if is_default:
+                    n_segments = len(segments_lv)
 
-            if not np.isnan(fd_dim) and 'box_sizes' in fd:
+                with open(iface_file, 'w') as fout:
+                    fout.write(f"# Interface (F={lv}) at t={sim_time:.6f} s "
+                               f"(tau={tau:.6f})\n")
+                    fout.write(f"# {len(segments_lv)} segments from "
+                               f"{len(contours_lv)} contour(s)\n")
+                    fout.write("# x1,y1 x2,y2\n")
+                    for seg in segments_lv:
+                        fout.write(f"{seg[0][0]:.7f},{seg[0][1]:.7f} "
+                                  f"{seg[1][0]:.7f},{seg[1][1]:.7f}\n")
+            except Exception as e:
+                print(f"  WARNING: interface extraction (F={lv}) failed: {e}")
+                if is_default:
+                    n_segments = 0
+
+            # Fractal dimension
+            if is_default:
                 bc_file = os.path.join(analysis_dir, 'fractal',
                                        f'boxcount_t{time_idx:05d}.csv')
-                bc_df = pd.DataFrame({
-                    'box_size': fd['box_sizes'],
-                    'box_count': fd['box_counts']
-                })
-                if 'box_sizes_nondim' in fd:
-                    bc_df['box_size_nondim'] = fd['box_sizes_nondim']
-                bc_df.to_csv(bc_file, index=False)
-        except Exception as e:
-            print(f"  WARNING: fractal dimension failed: {e}")
-            fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
+            else:
+                bc_file = os.path.join(analysis_dir, 'fractal',
+                                       f'boxcount_{col}_t{time_idx:05d}.csv')
+
+            try:
+                fd_lv = analyzer.compute_fractal_dimension(
+                    data, min_box_size=fixed_min_box,
+                    max_box_size=fixed_max_box, box_size_factor=fixed_factor,
+                    level=lv)
+                dim_lv = fd_lv['dimension']
+                err_lv = fd_lv['error']
+                r2_lv  = fd_lv['r_squared']
+
+                if is_default:
+                    fd_dim, fd_err, fd_r2 = dim_lv, err_lv, r2_lv
+                else:
+                    extra_fd[lv] = (dim_lv, r2_lv)
+
+                if not np.isnan(dim_lv) and 'box_sizes' in fd_lv:
+                    bc_df = pd.DataFrame({
+                        'box_size': fd_lv['box_sizes'],
+                        'box_count': fd_lv['box_counts']
+                    })
+                    if 'box_sizes_nondim' in fd_lv:
+                        bc_df['box_size_nondim'] = fd_lv['box_sizes_nondim']
+                    bc_df.to_csv(bc_file, index=False)
+            except Exception as e:
+                print(f"  WARNING: fractal dimension (F={lv}) failed: {e}")
+                if not is_default:
+                    extra_fd[lv] = (np.nan, np.nan)
 
         print(f"  h_geo={mix_geo['h_total']:.5f}  h_stat={mix_stat['h_total']:.5f}  "
               f"h_int={mix_int['h_total']:.5f}  "
               f"D={fd_dim:.4f}+/-{fd_err:.4f}  R2={fd_r2:.4f}  segs={n_segments}")
 
-        results.append({
+        row = {
             'time': sim_time, 'tau': tau,
             'ht_geo': mix_geo['ht'], 'hb_geo': mix_geo['hb'],
             'h_total_geo': mix_geo['h_total'],
@@ -386,7 +436,12 @@ def run_phase1(analyzer, physics, vtk_files, analysis_dir, H0):
             'h_01': mix_int.get('h_01', np.nan),
             'fractal_dim': fd_dim, 'fd_error': fd_err, 'fd_r_squared': fd_r2,
             'n_segments': n_segments
-        })
+        }
+        for lv, (dim_lv, r2_lv) in extra_fd.items():
+            col = _level_col(lv)
+            row[f'fractal_dim_{col}'] = dim_lv
+            row[f'fd_r_squared_{col}'] = r2_lv
+        results.append(row)
 
     # Build DataFrame with nondimensional quantities
     df = pd.DataFrame(results)
@@ -871,6 +926,21 @@ def run_phase3(analyzer, physics, vtk_files, analysis_dir, spec_times, df):
     spec_results_list = []
     vel_results_list = []
 
+    # Anchor the Dalziel horizontal-spectrum slab at the *initial* interface
+    # (Dalziel et al. 1999 §6.1 use z/H relative to the initial density
+    # discontinuity, fixed in time -- not the drifting instantaneous interface).
+    t0_file = min(vtk_files, key=lambda f: vtk_time(f))
+    d0 = analyzer.read_vtk_file(t0_file)
+    y_vals0 = d0['y'][0, :]
+    H_domain = float(y_vals0.max() - y_vals0.min())
+    # Dalziel references the slab to the initial interface, which sits at the domain
+    # mid-height (his z=0). Use mid-height directly rather than find_initial_interface():
+    # at t=0 the interface can be razor-sharp (sub-grid perturbation) with no row at
+    # F=0.5, so argmin(|F-0.5|) mis-fires to a domain edge (observed at MULES 960x1200).
+    y0_init = 0.5 * (float(y_vals0.min()) + float(y_vals0.max()))
+    print(f"  Dalziel slab anchored at initial interface y0={y0_init:.4f} m, "
+          f"H={H_domain:.4f} m, slab=[{y0_init - 0.1 * H_domain:.4f}, {y0_init:.4f}] m")
+
     for target_t in spec_times:
         best_file = min(vtk_files, key=lambda f: abs(vtk_time(f) - target_t))
         data = analyzer.read_vtk_file(best_file)
@@ -881,10 +951,31 @@ def run_phase3(analyzer, physics, vtk_files, analysis_dir, spec_times, df):
         # --- Power spectrum ---
         spec_result = {'time': actual_t, 'tau': tau_val}
 
+        # PRIMARY: Dalziel et al. (1999) §6.1 horizontal-slab concentration spectrum.
+        dalziel_spec = psa.analyze_dalziel_horizontal_spectrum(
+            data['f'], data['x'], data['y'], y0_init, H_domain, field_name='F')
+        spec_result['dalziel_spectrum'] = dalziel_spec
+        _bandstr = []
+        for _bk in dalziel_spec.get('band_keys', []):
+            _f = dalziel_spec[_bk]
+            _flag = '' if _f.get('fully_resolved', True) else '*'
+            _bandstr.append(f"[{_f['fit_k_k0_min']:.0f}-{_f['fit_k_k0_max']:.0f}{_flag}] "
+                            f"beta={_f['power_law_slope']:.3f} (R2={_f['power_law_r_squared']:.2f})")
+        print(f"    Dalziel spectrum ({dalziel_spec['n_slab_rows']} slab rows): "
+              + "  ".join(_bandstr) + "   (* = past 6dx limit)")
+        # Persist the per-snapshot horizontal spectrum P(k/k0) so the three codes
+        # can be power-averaged into a Dalziel-style ensemble across methods.
+        if len(dalziel_spec.get('k_over_k0', [])) > 0:
+            _ms = int(round(actual_t * 1000))
+            pd.DataFrame({'k_over_k0': dalziel_spec['k_over_k0'],
+                          'power': dalziel_spec['power']}).to_csv(
+                os.path.join(spectra_dir, f'dalziel_pk_t{_ms}.csv'), index=False)
+
+        # SECONDARY (retained): full-domain 2-D radial spectrum.
         vof_spec = psa.analyze_2d_field_spectrum(data['f'], data['x'], data['y'],
                                                   field_name='F', detrend=True)
         spec_result['vof_spectrum'] = vof_spec
-        print(f"    VOF spectrum: slope={vof_spec['power_law_slope']:.3f}, "
+        print(f"    [2D-radial] slope={vof_spec['power_law_slope']:.3f}, "
               f"R2={vof_spec['power_law_r_squared']:.3f}, "
               f"lambda_dom={vof_spec['dominant_wavelength']:.4f}")
 
@@ -1035,6 +1126,16 @@ def _plot_phase3(spec_results_list, vel_results_list, analyzer, physics, psa,
         spec_summary = []
         for sr in spec_results_list:
             row = {'time': sr['time'], 'tau': sr['tau']}
+            if 'dalziel_spectrum' in sr:
+                ds = sr['dalziel_spectrum']
+                row['dalziel_n_slab_rows'] = ds['n_slab_rows']
+                row['dalziel_k_6dx'] = ds.get('k_6dx', np.nan)
+                for bk in ds.get('band_keys', []):
+                    f = ds[bk]
+                    tag = bk.replace('fit_', '')  # e.g. '10_25'
+                    row[f'dalziel_beta_{tag}'] = f['power_law_slope']
+                    row[f'dalziel_R2_{tag}'] = f['power_law_r_squared']
+                    row[f'dalziel_resolved_{tag}'] = f.get('fully_resolved', True)
             for key in ['vof_spectrum', 'u_velocity_spectrum', 'v_velocity_spectrum', 'tke_spectrum']:
                 if key in sr:
                     prefix = key.replace('_spectrum', '')
@@ -1045,6 +1146,74 @@ def _plot_phase3(spec_results_list, vel_results_list, analyzer, physics, psa,
             spec_summary.append(row)
         pd.DataFrame(spec_summary).to_csv(
             os.path.join(spectra_dir, 'spectrum_summary.csv'), index=False)
+
+        # --- Dalziel et al. (1999) horizontal-spectrum figures (primary) ---
+        if 'dalziel_spectrum' in spec_results_list[0]:
+            d_taus = np.array([sr['tau'] for sr in spec_results_list])
+            band_keys = spec_results_list[0]['dalziel_spectrum'].get('band_keys', [])
+
+            # Fig-16 analog: spectral-slope evolution beta(tau), one curve per fit band.
+            fig, ax = plt.subplots(figsize=(8, 6))
+            bcolors = {'fit_10_25': 'C0', 'fit_10_50': 'C3'}
+            bmark = {'fit_10_25': 'o', 'fit_10_50': 's'}
+            for bk in band_keys:
+                betas = np.array([sr['dalziel_spectrum'][bk]['power_law_slope']
+                                  for sr in spec_results_list])
+                lo = spec_results_list[0]['dalziel_spectrum'][bk]['fit_k_k0_min']
+                hi = spec_results_list[0]['dalziel_spectrum'][bk]['fit_k_k0_max']
+                resolved = all(sr['dalziel_spectrum'][bk].get('fully_resolved', True)
+                               for sr in spec_results_list)
+                lbl = rf'$10 \leq k/k_0 \leq {hi:.0f}$' + ('' if resolved else r' (past $6\,dx$)')
+                ax.plot(d_taus, betas, marker=bmark.get(bk, '^'), ls='-', ms=6,
+                        color=bcolors.get(bk, 'C2'), label=lbl)
+            # Dalziel's cited tau=2 benchmarks (his Figs 15-17 are read at tau=2).
+            ax.plot(2.0, -1.49, 'kv', ms=10, label=r'Dalziel exp. ($-1.49$)')
+            ax.plot(2.0, -1.79, 'k^', ms=10, mfc='none', label=r'Dalziel idealised sim. ($-1.79$)')
+            ax.plot(2.0, -1.63, 'kD', ms=8, mfc='0.7', label=r'Dalziel barrier sim. ($-1.63$)')
+            ax.axhline(-5/3, color='0.6', ls=':', alpha=0.6, label=r'$-5/3$ (Kolmogorov)')
+            ax.axvline(2.0, color='0.6', lw=0.8, alpha=0.5)
+            ax.set_xlabel(r'Time, $\tau$')
+            ax.set_ylabel(r'Spectral slope, $\beta$')
+            ax.set_ylim(-2.6, 0)
+            ax.set_title(f'Dalziel horizontal concentration spectral slope -- {res_label}')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(spectra_dir, 'dalziel_slope_evolution.png'), dpi=300)
+            plt.close()
+
+            # Fig-15 analog: P vs k/k0 at early/mid/late times, both bands shaded.
+            idxs = sorted(set([0, len(spec_results_list)//2, len(spec_results_list)-1]))
+            fig, ax = plt.subplots(figsize=(8, 6))
+            colors = ['C0', 'C1', 'C2']
+            for c, idx in zip(colors, idxs):
+                ds = spec_results_list[idx]['dalziel_spectrum']
+                kk = ds['k_over_k0']; pw = ds['power']
+                if len(kk) == 0:
+                    continue
+                msk = pw > 0
+                blab = ', '.join(rf'$\beta_{{{ds[bk]["fit_k_k0_max"]:.0f}}}$={ds[bk]["power_law_slope"]:.2f}'
+                                 for bk in band_keys)
+                ax.loglog(kk[msk], pw[msk], '+', color=c, alpha=0.5, ms=4,
+                          label=rf'$\tau$={spec_results_list[idx]["tau"]:.2f} ({blab})')
+                for bk in band_keys:
+                    f = ds[bk]
+                    band = (kk >= f['fit_k_k0_min']) & (kk <= f['fit_k_k0_max']) & (pw > 0)
+                    if np.sum(band) > 2 and not np.isnan(f.get('power_law_intercept', np.nan)):
+                        kfit = kk[band]
+                        pfit = 10**(f['power_law_slope']*np.log10(kfit) + f['power_law_intercept'])
+                        ax.loglog(kfit, pfit, '-', color=c, lw=2, alpha=0.9)
+            ds0 = spec_results_list[idxs[0]]['dalziel_spectrum']
+            for bk, alpha in zip(band_keys, [0.07, 0.04]):
+                ax.axvspan(ds0[bk]['fit_k_k0_min'], ds0[bk]['fit_k_k0_max'], color='k', alpha=alpha)
+            ax.set_xlabel(r'Wavenumber, $k/k_0$')
+            ax.set_ylabel(r'Power, $P$')
+            ax.set_title(f'Dalziel horizontal concentration spectrum -- {res_label}')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3, which='both')
+            plt.tight_layout()
+            plt.savefig(os.path.join(spectra_dir, 'dalziel_spectra_snapshots.png'), dpi=300)
+            plt.close()
 
         # 4-panel spectral evolution
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -1187,6 +1356,9 @@ Examples:
                         help='Skip Phase 3 (spectra + velocity)')
     parser.add_argument('--output-dir',
                         help='Override output directory (default: case_dir/analysis)')
+    parser.add_argument('--contour-levels', default='0.5',
+                        help='Comma-separated VOF contour levels for fractal D '
+                             '(default: 0.5). Example: 0.1,0.5,0.9')
 
     args = parser.parse_args()
 
@@ -1252,6 +1424,12 @@ Examples:
     # Parse multifractal/spectrum times
     mf_times = [float(t) for t in args.mf_times.split(',')]
 
+    # Parse contour levels for fractal D
+    contour_levels = sorted(set(float(v) for v in args.contour_levels.split(',')))
+    if not contour_levels:
+        contour_levels = [0.5]
+    print(f"Contour levels for fractal D: {contour_levels}")
+
     H0 = phys['H0']
 
     # ─── Run Analysis Phases ──────────────────────────────────────────────
@@ -1262,7 +1440,8 @@ Examples:
             print("=" * 70)
             print("PHASE 1: Mixing thickness and fractal dimension for all timesteps")
             print("=" * 70)
-            df = run_phase1(analyzer, physics, vtk_files, analysis_dir, H0)
+            df = run_phase1(analyzer, physics, vtk_files, analysis_dir, H0,
+                            contour_levels=contour_levels)
         else:
             # Try to load existing results
             csv_path = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
@@ -1275,7 +1454,8 @@ Examples:
                 print("=" * 70)
                 print("PHASE 1: Mixing thickness and fractal dimension for all timesteps")
                 print("=" * 70)
-                df = run_phase1(analyzer, physics, vtk_files, analysis_dir, H0)
+                df = run_phase1(analyzer, physics, vtk_files, analysis_dir, H0,
+                                contour_levels=contour_levels)
 
         # Phase 2
         if not args.skip_phase2:
@@ -1309,7 +1489,8 @@ Examples:
             print("=" * 70)
             df = _run_phase1_openfoam(analyzer, physics, case_dir,
                                        of_times, analysis_dir, H0,
-                                       phys_nx=phys['NX'], phys_ny=phys['NY'])
+                                       phys_nx=phys['NX'], phys_ny=phys['NY'],
+                                       contour_levels=contour_levels)
         else:
             csv_path = os.path.join(analysis_dir, 'summary', 'temporal_results.csv')
             if os.path.isfile(csv_path):
@@ -1318,7 +1499,8 @@ Examples:
                 print("WARNING: Phase 1 skipped and no existing results. Running Phase 1.")
                 df = _run_phase1_openfoam(analyzer, physics, case_dir,
                                            of_times, analysis_dir, H0,
-                                           phys_nx=phys['NX'], phys_ny=phys['NY'])
+                                           phys_nx=phys['NX'], phys_ny=phys['NY'],
+                                           contour_levels=contour_levels)
 
         if not args.skip_phase2:
             print("\n" + "=" * 70)
@@ -1352,8 +1534,17 @@ Examples:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0,
-                         phys_nx=None, phys_ny=None):
-    """Phase 1 for OpenFOAM cases: process all timesteps."""
+                         phys_nx=None, phys_ny=None, contour_levels=None):
+    """Phase 1 for OpenFOAM cases: process all timesteps.
+
+    contour_levels: list of VOF levels at which to compute fractal D
+        (default [0.5]).  Level 0.5 always writes to the original
+        backward-compatible filenames; additional levels write to
+        interface_F{NN}_t*.dat and boxcount_F{NN}_t*.csv files.
+    """
+    if contour_levels is None:
+        contour_levels = [0.5]
+
     H = physics.H
 
     for subdir in ['interfaces', 'fractal', 'summary', 'profiles']:
@@ -1370,6 +1561,10 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
     fixed_factor = 1.5
     print(f"  Fixed scales: max={fixed_max_box:.6f}, min={fixed_min_box:.6f}, "
           f"factor={fixed_factor}")
+
+    # Helper: column name suffix for a given level (0.5->'F05', 0.1->'F01')
+    def _level_col(lv):
+        return f'F{int(round(lv * 10)):02d}'
 
     results = []
 
@@ -1389,7 +1584,7 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             print(f"  WARNING: alpha profile save failed: {e}")
 
         if sim_time < 0.01:
-            results.append({
+            row = {
                 'time': sim_time, 'tau': tau,
                 'ht_geo': 0.0, 'hb_geo': 0.0, 'h_total_geo': 0.0,
                 'ht_stat': 0.0, 'hb_stat': 0.0, 'h_total_stat': 0.0,
@@ -1397,7 +1592,14 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
                 'h_10': 0.0, 'h_11': H/2.0, 'h_00': H/2.0, 'h_01': 0.0,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_segments': 0
-            })
+            }
+            for lv in contour_levels:
+                if lv == 0.5:
+                    continue
+                col = _level_col(lv)
+                row[f'fractal_dim_{col}'] = np.nan
+                row[f'fd_r_squared_{col}'] = np.nan
+            results.append(row)
             continue
 
         try:
@@ -1417,47 +1619,83 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
                         'h_10': np.nan, 'h_11': np.nan,
                         'h_00': np.nan, 'h_01': np.nan}
 
-        try:
-            contours = analyzer.extract_interface(data['f'], data['x'], data['y'])
-            segments = analyzer.convert_contours_to_segments(contours)
-            n_segments = len(segments)
+        # Interface extraction + fractal dimension for each contour level
+        n_segments = 0
+        fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
+        extra_fd = {}  # {level: (dim, r2)} for non-0.5 levels
 
-            interface_file = os.path.join(analysis_dir, 'interfaces',
+        for lv in contour_levels:
+            col = _level_col(lv)
+            is_default = (lv == 0.5)
+
+            # Interface file: default level uses backward-compatible name
+            if is_default:
+                iface_file = os.path.join(analysis_dir, 'interfaces',
                                           f'interface_t{time_idx:05d}.dat')
-            with open(interface_file, 'w') as fout:
-                fout.write(f"# Interface at t={sim_time:.6f} s (tau={tau:.6f})\n")
-                fout.write(f"# {n_segments} segments\n")
-                fout.write("# x1,y1 x2,y2\n")
-                for seg in segments:
-                    fout.write(f"{seg[0][0]:.7f},{seg[0][1]:.7f} "
-                              f"{seg[1][0]:.7f},{seg[1][1]:.7f}\n")
-        except Exception:
-            n_segments = 0
+            else:
+                iface_file = os.path.join(analysis_dir, 'interfaces',
+                                          f'interface_{col}_t{time_idx:05d}.dat')
 
-        try:
-            fd = analyzer.compute_fractal_dimension(
-                data, min_box_size=fixed_min_box,
-                max_box_size=fixed_max_box, box_size_factor=fixed_factor)
-            fd_dim, fd_err, fd_r2 = fd['dimension'], fd['error'], fd['r_squared']
+            try:
+                contours_lv = analyzer.extract_interface(
+                    data['f'], data['x'], data['y'], level=lv)
+                segments_lv = analyzer.convert_contours_to_segments(contours_lv)
+                if is_default:
+                    n_segments = len(segments_lv)
 
-            if not np.isnan(fd_dim) and 'box_sizes' in fd:
+                with open(iface_file, 'w') as fout:
+                    fout.write(f"# Interface (F={lv}) at t={sim_time:.6f} s "
+                               f"(tau={tau:.6f})\n")
+                    fout.write(f"# {len(segments_lv)} segments\n")
+                    fout.write("# x1,y1 x2,y2\n")
+                    for seg in segments_lv:
+                        fout.write(f"{seg[0][0]:.7f},{seg[0][1]:.7f} "
+                                  f"{seg[1][0]:.7f},{seg[1][1]:.7f}\n")
+            except Exception as e:
+                print(f"  WARNING: interface extraction (F={lv}) failed: {e}")
+                if is_default:
+                    n_segments = 0
+
+            # Fractal dimension
+            if is_default:
                 bc_file = os.path.join(analysis_dir, 'fractal',
                                        f'boxcount_t{time_idx:05d}.csv')
-                bc_df = pd.DataFrame({
-                    'box_size': fd['box_sizes'],
-                    'box_count': fd['box_counts']
-                })
-                if 'box_sizes_nondim' in fd:
-                    bc_df['box_size_nondim'] = fd['box_sizes_nondim']
-                bc_df.to_csv(bc_file, index=False)
-        except Exception:
-            fd_dim, fd_err, fd_r2 = np.nan, np.nan, np.nan
+            else:
+                bc_file = os.path.join(analysis_dir, 'fractal',
+                                       f'boxcount_{col}_t{time_idx:05d}.csv')
+
+            try:
+                fd_lv = analyzer.compute_fractal_dimension(
+                    data, min_box_size=fixed_min_box,
+                    max_box_size=fixed_max_box, box_size_factor=fixed_factor,
+                    level=lv)
+                dim_lv = fd_lv['dimension']
+                err_lv = fd_lv['error']
+                r2_lv  = fd_lv['r_squared']
+
+                if is_default:
+                    fd_dim, fd_err, fd_r2 = dim_lv, err_lv, r2_lv
+                else:
+                    extra_fd[lv] = (dim_lv, r2_lv)
+
+                if not np.isnan(dim_lv) and 'box_sizes' in fd_lv:
+                    bc_df = pd.DataFrame({
+                        'box_size': fd_lv['box_sizes'],
+                        'box_count': fd_lv['box_counts']
+                    })
+                    if 'box_sizes_nondim' in fd_lv:
+                        bc_df['box_size_nondim'] = fd_lv['box_sizes_nondim']
+                    bc_df.to_csv(bc_file, index=False)
+            except Exception as e:
+                print(f"  WARNING: fractal dimension (F={lv}) failed: {e}")
+                if not is_default:
+                    extra_fd[lv] = (np.nan, np.nan)
 
         print(f"  h_geo={mix_geo['h_total']:.5f}  h_stat={mix_stat['h_total']:.5f}  "
               f"h_int={mix_int['h_total']:.5f}  "
               f"D={fd_dim:.4f}+/-{fd_err:.4f}  segs={n_segments}")
 
-        results.append({
+        row = {
             'time': sim_time, 'tau': tau,
             'ht_geo': mix_geo['ht'], 'hb_geo': mix_geo['hb'],
             'h_total_geo': mix_geo['h_total'],
@@ -1471,7 +1709,12 @@ def _run_phase1_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, H0
             'h_01': mix_int.get('h_01', np.nan),
             'fractal_dim': fd_dim, 'fd_error': fd_err, 'fd_r_squared': fd_r2,
             'n_segments': n_segments
-        })
+        }
+        for lv, (dim_lv, r2_lv) in extra_fd.items():
+            col = _level_col(lv)
+            row[f'fractal_dim_{col}'] = dim_lv
+            row[f'fd_r_squared_{col}'] = r2_lv
+        results.append(row)
 
     df = pd.DataFrame(results)
     for col in ['ht_geo', 'hb_geo', 'h_total_geo',
@@ -1774,6 +2017,21 @@ def _run_phase3_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, sp
     spec_results_list = []
     vel_results_list = []
 
+    # Anchor the Dalziel horizontal-spectrum slab at the *initial* interface
+    # (Dalziel et al. 1999 §6.1 use z/H relative to the initial density
+    # discontinuity, fixed in time -- not the drifting instantaneous interface).
+    t0 = min(of_times)
+    d0 = analyzer.read_openfoam_field(case_dir, t0)
+    y_vals0 = d0['y'][0, :]
+    H_domain = float(y_vals0.max() - y_vals0.min())
+    # Dalziel references the slab to the initial interface, which sits at the domain
+    # mid-height (his z=0). Use mid-height directly rather than find_initial_interface():
+    # at t=0 the interface can be razor-sharp (sub-grid perturbation) with no row at
+    # F=0.5, so argmin(|F-0.5|) mis-fires to a domain edge (observed at MULES 960x1200).
+    y0_init = 0.5 * (float(y_vals0.min()) + float(y_vals0.max()))
+    print(f"  Dalziel slab anchored at initial interface y0={y0_init:.4f} m, "
+          f"H={H_domain:.4f} m, slab=[{y0_init - 0.1 * H_domain:.4f}, {y0_init:.4f}] m")
+
     for target_t in spec_times:
         closest_t = min(of_times, key=lambda t: abs(t - target_t))
         data = analyzer.read_openfoam_field(case_dir, closest_t)
@@ -1784,10 +2042,31 @@ def _run_phase3_openfoam(analyzer, physics, case_dir, of_times, analysis_dir, sp
         # --- Power spectrum ---
         spec_result = {'time': actual_t, 'tau': tau_val}
 
+        # PRIMARY: Dalziel et al. (1999) §6.1 horizontal-slab concentration spectrum.
+        dalziel_spec = psa.analyze_dalziel_horizontal_spectrum(
+            data['f'], data['x'], data['y'], y0_init, H_domain, field_name='F')
+        spec_result['dalziel_spectrum'] = dalziel_spec
+        _bandstr = []
+        for _bk in dalziel_spec.get('band_keys', []):
+            _f = dalziel_spec[_bk]
+            _flag = '' if _f.get('fully_resolved', True) else '*'
+            _bandstr.append(f"[{_f['fit_k_k0_min']:.0f}-{_f['fit_k_k0_max']:.0f}{_flag}] "
+                            f"beta={_f['power_law_slope']:.3f} (R2={_f['power_law_r_squared']:.2f})")
+        print(f"    Dalziel spectrum ({dalziel_spec['n_slab_rows']} slab rows): "
+              + "  ".join(_bandstr) + "   (* = past 6dx limit)")
+        # Persist the per-snapshot horizontal spectrum P(k/k0) so the three codes
+        # can be power-averaged into a Dalziel-style ensemble across methods.
+        if len(dalziel_spec.get('k_over_k0', [])) > 0:
+            _ms = int(round(actual_t * 1000))
+            pd.DataFrame({'k_over_k0': dalziel_spec['k_over_k0'],
+                          'power': dalziel_spec['power']}).to_csv(
+                os.path.join(spectra_dir, f'dalziel_pk_t{_ms}.csv'), index=False)
+
+        # SECONDARY (retained): full-domain 2-D radial spectrum.
         vof_spec = psa.analyze_2d_field_spectrum(data['f'], data['x'], data['y'],
                                                   field_name='F', detrend=True)
         spec_result['vof_spectrum'] = vof_spec
-        print(f"    VOF spectrum: slope={vof_spec['power_law_slope']:.3f}, "
+        print(f"    [2D-radial] slope={vof_spec['power_law_slope']:.3f}, "
               f"R2={vof_spec['power_law_r_squared']:.3f}, "
               f"lambda_dom={vof_spec['dominant_wavelength']:.4f}")
 
@@ -1934,6 +2213,16 @@ def _plot_phase3_openfoam(spec_results_list, vel_results_list, analyzer, physics
         spec_summary = []
         for sr in spec_results_list:
             row = {'time': sr['time'], 'tau': sr['tau']}
+            if 'dalziel_spectrum' in sr:
+                ds = sr['dalziel_spectrum']
+                row['dalziel_n_slab_rows'] = ds['n_slab_rows']
+                row['dalziel_k_6dx'] = ds.get('k_6dx', np.nan)
+                for bk in ds.get('band_keys', []):
+                    f = ds[bk]
+                    tag = bk.replace('fit_', '')  # e.g. '10_25'
+                    row[f'dalziel_beta_{tag}'] = f['power_law_slope']
+                    row[f'dalziel_R2_{tag}'] = f['power_law_r_squared']
+                    row[f'dalziel_resolved_{tag}'] = f.get('fully_resolved', True)
             for key in ['vof_spectrum', 'u_velocity_spectrum', 'v_velocity_spectrum', 'tke_spectrum']:
                 if key in sr:
                     prefix = key.replace('_spectrum', '')
@@ -1944,6 +2233,74 @@ def _plot_phase3_openfoam(spec_results_list, vel_results_list, analyzer, physics
             spec_summary.append(row)
         pd.DataFrame(spec_summary).to_csv(
             os.path.join(spectra_dir, 'spectrum_summary.csv'), index=False)
+
+        # --- Dalziel et al. (1999) horizontal-spectrum figures (primary) ---
+        if 'dalziel_spectrum' in spec_results_list[0]:
+            d_taus = np.array([sr['tau'] for sr in spec_results_list])
+            band_keys = spec_results_list[0]['dalziel_spectrum'].get('band_keys', [])
+
+            # Fig-16 analog: spectral-slope evolution beta(tau), one curve per fit band.
+            fig, ax = plt.subplots(figsize=(8, 6))
+            bcolors = {'fit_10_25': 'C0', 'fit_10_50': 'C3'}
+            bmark = {'fit_10_25': 'o', 'fit_10_50': 's'}
+            for bk in band_keys:
+                betas = np.array([sr['dalziel_spectrum'][bk]['power_law_slope']
+                                  for sr in spec_results_list])
+                lo = spec_results_list[0]['dalziel_spectrum'][bk]['fit_k_k0_min']
+                hi = spec_results_list[0]['dalziel_spectrum'][bk]['fit_k_k0_max']
+                resolved = all(sr['dalziel_spectrum'][bk].get('fully_resolved', True)
+                               for sr in spec_results_list)
+                lbl = rf'$10 \leq k/k_0 \leq {hi:.0f}$' + ('' if resolved else r' (past $6\,dx$)')
+                ax.plot(d_taus, betas, marker=bmark.get(bk, '^'), ls='-', ms=6,
+                        color=bcolors.get(bk, 'C2'), label=lbl)
+            # Dalziel's cited tau=2 benchmarks (his Figs 15-17 are read at tau=2).
+            ax.plot(2.0, -1.49, 'kv', ms=10, label=r'Dalziel exp. ($-1.49$)')
+            ax.plot(2.0, -1.79, 'k^', ms=10, mfc='none', label=r'Dalziel idealised sim. ($-1.79$)')
+            ax.plot(2.0, -1.63, 'kD', ms=8, mfc='0.7', label=r'Dalziel barrier sim. ($-1.63$)')
+            ax.axhline(-5/3, color='0.6', ls=':', alpha=0.6, label=r'$-5/3$ (Kolmogorov)')
+            ax.axvline(2.0, color='0.6', lw=0.8, alpha=0.5)
+            ax.set_xlabel(r'Time, $\tau$')
+            ax.set_ylabel(r'Spectral slope, $\beta$')
+            ax.set_ylim(-2.6, 0)
+            ax.set_title(f'Dalziel horizontal concentration spectral slope -- {res_label}')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(os.path.join(spectra_dir, 'dalziel_slope_evolution.png'), dpi=300)
+            plt.close()
+
+            # Fig-15 analog: P vs k/k0 at early/mid/late times, both bands shaded.
+            idxs = sorted(set([0, len(spec_results_list)//2, len(spec_results_list)-1]))
+            fig, ax = plt.subplots(figsize=(8, 6))
+            colors = ['C0', 'C1', 'C2']
+            for c, idx in zip(colors, idxs):
+                ds = spec_results_list[idx]['dalziel_spectrum']
+                kk = ds['k_over_k0']; pw = ds['power']
+                if len(kk) == 0:
+                    continue
+                msk = pw > 0
+                blab = ', '.join(rf'$\beta_{{{ds[bk]["fit_k_k0_max"]:.0f}}}$={ds[bk]["power_law_slope"]:.2f}'
+                                 for bk in band_keys)
+                ax.loglog(kk[msk], pw[msk], '+', color=c, alpha=0.5, ms=4,
+                          label=rf'$\tau$={spec_results_list[idx]["tau"]:.2f} ({blab})')
+                for bk in band_keys:
+                    f = ds[bk]
+                    band = (kk >= f['fit_k_k0_min']) & (kk <= f['fit_k_k0_max']) & (pw > 0)
+                    if np.sum(band) > 2 and not np.isnan(f.get('power_law_intercept', np.nan)):
+                        kfit = kk[band]
+                        pfit = 10**(f['power_law_slope']*np.log10(kfit) + f['power_law_intercept'])
+                        ax.loglog(kfit, pfit, '-', color=c, lw=2, alpha=0.9)
+            ds0 = spec_results_list[idxs[0]]['dalziel_spectrum']
+            for bk, alpha in zip(band_keys, [0.07, 0.04]):
+                ax.axvspan(ds0[bk]['fit_k_k0_min'], ds0[bk]['fit_k_k0_max'], color='k', alpha=alpha)
+            ax.set_xlabel(r'Wavenumber, $k/k_0$')
+            ax.set_ylabel(r'Power, $P$')
+            ax.set_title(f'Dalziel horizontal concentration spectrum -- {res_label}')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3, which='both')
+            plt.tight_layout()
+            plt.savefig(os.path.join(spectra_dir, 'dalziel_spectra_snapshots.png'), dpi=300)
+            plt.close()
 
         # 4-panel spectral evolution
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
