@@ -478,6 +478,72 @@ def _compute_projected_D(tri_mesh, phys, mesh, analysis_dir, t):
     return D_proj, R2
 
 
+def compute_molecular_mixing_3d(alpha_3d, y_centers):
+    """Molecular mixing fraction, Dalziel, Linden & Youngs (1999) §7.2.
+
+    Four quantities, transcribed from the paper (pp. 41-44). C is the
+    concentration; here the heavy-fluid volume fraction alpha plays that role.
+
+      Eq (10)  theta(z)    = <<C(1-C)>> / (<<C>> <<1-C>>)
+               double overbar = average over a horizontal PLANE, i.e. along and
+               across the domain (our x and z). A profile in height, not a scalar.
+
+      Eq (11)  theta_hat(z) = < bar{C(1-C)} / (bar{C} bar{1-C}) >
+               along-tank (x) averages only, then averaged across the tank (z).
+               Note this averages the RATIO, where (10) is a ratio of averages.
+
+      Eq (12)  Theta      = int bar{C(1-C)} dz / int bar{C} bar{1-C} dz
+               global mixing/horizontal homogeneity over the ENTIRE domain
+               (-H/2 to H/2, not just the mixing layer), after Linden et al. (1994).
+
+      Eq (13)  Theta_hat  = < int bar{C(1-C)} dz / int bar{C} bar{1-C} dz >
+               the same, but averaging the QUOTIENT of the integrals across the
+               tank rather than taking a quotient of averaged integrals.
+
+    theta = 1 means concentration uniform across the plane (fully mixed);
+    0 means unmixed. Dalziel reports Theta_hat -> 0.8 asymptotically for
+    well-resolved self-similar mixing (Linden et al. 1994), and notes that
+    simulations underestimate it early on for want of fine-scale resolution.
+
+    NOTE OF SCOPE: those target values are at Dalziel's single Atwood number,
+    A = 2.1e-3. For the Atwood study (A = 0.04-0.60) compare against Banerjee,
+    Kraft & Andrews (2010) instead.
+
+    alpha_3d is indexed (nz, ny, nx); y_centers indexes axis 1.
+    """
+    C = alpha_3d
+    P = C * (1.0 - C)
+
+    # --- Eq (10): plane averages over both horizontal directions ---
+    C_pl = C.mean(axis=(0, 2))                     # (ny,)
+    P_pl = P.mean(axis=(0, 2))
+    den_pl = C_pl * (1.0 - C_pl)
+    theta = np.divide(P_pl, den_pl, out=np.zeros_like(P_pl), where=den_pl > 0)
+
+    # --- Eq (11): along-tank averages, then average the ratio across the tank ---
+    C_x = C.mean(axis=2)                           # (nz, ny)
+    P_x = P.mean(axis=2)
+    den_x = C_x * (1.0 - C_x)
+    ratio = np.divide(P_x, den_x, out=np.zeros_like(P_x), where=den_x > 0)
+    theta_hat = ratio.mean(axis=0)                 # (ny,)
+
+    # --- Eq (12): global, ratio of integrals over the full domain ---
+    num = float(_trapezoid(P_pl, y_centers))
+    den = float(_trapezoid(den_pl, y_centers))
+    # den = 0 means every plane is pure fluid (C_bar is 0 or 1 everywhere), i.e.
+    # a sharp, horizontally flat interface: unmixed, so Theta = 0 rather than 0/0.
+    Theta = num / den if den > 0 else 0.0
+
+    # --- Eq (13): quotient of integrals per slice, then averaged across tank ---
+    num_s = np.array([float(_trapezoid(P_x[k], y_centers)) for k in range(P_x.shape[0])])
+    den_s = np.array([float(_trapezoid(den_x[k], y_centers)) for k in range(den_x.shape[0])])
+    q = np.divide(num_s, den_s, out=np.zeros_like(num_s), where=den_s > 0)
+    Theta_hat = float(q.mean())   # slices with den = 0 are unmixed, contributing 0
+
+    return {'theta': theta, 'theta_hat': theta_hat,
+            'Theta': Theta, 'Theta_hat': Theta_hat}
+
+
 def read_velocity_fast(time_dir, mesh):
     """Read U into (nz, ny, nx, 3) with a vectorised parse.
 
@@ -586,6 +652,8 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
                 'youngs_W': 0.0, 'mixing_efficiency': 0.0,
                 'fractal_dim': np.nan, 'fd_error': np.nan, 'fd_r_squared': np.nan,
                 'n_triangles': 0, 'surface_area': 0.0,
+                # unmixed: C is 0 or 1 everywhere, so C(1-C) = 0 identically
+                'Theta': 0.0, 'Theta_hat': 0.0,
             })
             if do_energy:
                 # Reference state: heavy above H0, light below, at rest. Computed
@@ -624,6 +692,18 @@ def run_phase1(case_dir, mesh, phys, rt_physics, interface_times,
             alpha_3d = read_openfoam_alpha_3d(time_dir, mesh)
             if alpha_3d is not None:
                 mix = compute_mixing_3d(alpha_3d, y_centers, H0, H)
+                try:
+                    mm = compute_molecular_mixing_3d(alpha_3d, y_centers)
+                    row['Theta'] = mm['Theta']
+                    row['Theta_hat'] = mm['Theta_hat']
+                    t_ms = int(round(t * 1000))
+                    pd.DataFrame({'y_m': y_centers,
+                                  'theta': mm['theta'],
+                                  'theta_hat': mm['theta_hat']}).to_csv(
+                        os.path.join(analysis_dir, 'profiles',
+                                     f'theta_profile_t{t_ms:05d}.csv'), index=False)
+                except Exception as e:
+                    print(f"  WARNING: molecular mixing failed: {e}")
                 if do_energy:
                     try:
                         U_3d = read_velocity_fast(time_dir, mesh)
