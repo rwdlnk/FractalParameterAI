@@ -43,8 +43,8 @@ class RTPhysics:
     time_scale: float = field(init=False, repr=False)
 
     def __post_init__(self):
-        if self.A <= 0 or self.A > 1:
-            raise ValueError(f"Atwood number must be in (0, 1], got {self.A}")
+        if self.A < 0 or self.A > 1:
+            raise ValueError(f"Atwood number must be in [0, 1], got {self.A}")
         if self.g <= 0:
             raise ValueError(f"Gravity must be positive, got {self.g}")
         if self.H <= 0:
@@ -52,9 +52,15 @@ class RTPhysics:
         if self.L <= 0:
             raise ValueError(f"Domain width must be positive, got {self.L}")
 
-        self.tau_factor = np.sqrt(self.A * self.g / self.H)
-        self.velocity_scale = np.sqrt(self.A * self.g * self.H)
-        self.time_scale = np.sqrt(self.H / (self.A * self.g))
+        if self.A == 0:
+            # No buoyancy: use dimensional time (tau = t in seconds)
+            self.tau_factor = 1.0
+            self.velocity_scale = 1.0
+            self.time_scale = 1.0
+        else:
+            self.tau_factor = np.sqrt(self.A * self.g / self.H)
+            self.velocity_scale = np.sqrt(self.A * self.g * self.H)
+            self.time_scale = np.sqrt(self.H / (self.A * self.g))
 
     # --- Nondimensionalization ---
 
